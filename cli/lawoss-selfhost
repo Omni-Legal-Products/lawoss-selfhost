@@ -1,0 +1,8 @@
+#!/bin/sh
+# Runs the setup CLI with the Node binary that install-host-files.sh copied from the pinned auth
+# image (<root>/node/bin/node), so the host needs no Node package. Installed as <root>/bin/lawoss-selfhost.
+set -eu
+root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd -P)
+LAWOSS_ROOT=${LAWOSS_ROOT:-$root}
+export LAWOSS_ROOT
+exec "$root/node/bin/node" "$root/bin/lawoss-selfhost.mjs" "$@"

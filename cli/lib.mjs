@@ -238,11 +238,12 @@ export const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/;
 const RECORD_FIELDS = new Set(['version', 'commit', 'images', 'files', 'note']);
 const IMAGE_FIELDS = ['auth', 'hub', 'proxy'];
 /**
- * Host files a release installs under <root> from its commit: the deployment files and the CLI in
- * bin/. A record lists each with its SHA-256; these must always be among them.
+ * Host files a release installs under <root> from its commit (deploy/host-files.mjs maps them): the
+ * deployment files, the CLI in bin/ and its wrapper bin/lawoss-selfhost, which runs it with the Node
+ * binary taken from the auth image. A record lists each with its SHA-256; these must always be among them.
  */
-export const REQUIRED_HOST_FILES = ['compose.yaml', 'services.json', 'Caddyfile.template', 'bin/lawoss-selfhost.mjs', 'bin/lib.mjs'];
-const HOST_FILE = /^(?:compose\.yaml|services\.json|Caddyfile\.template|bin\/package\.json|bin\/(?:commands\/)?[a-z0-9-]{1,64}\.mjs)$/;
+export const REQUIRED_HOST_FILES = ['compose.yaml', 'services.json', 'Caddyfile.template', 'bin/lawoss-selfhost', 'bin/lawoss-selfhost.mjs', 'bin/lib.mjs'];
+const HOST_FILE = /^(?:compose\.yaml|services\.json|Caddyfile\.template|bin\/package\.json|bin\/lawoss-selfhost|bin\/(?:commands\/)?[a-z0-9-]{1,64}\.mjs)$/;
 
 export function validateRecord(record, version) {
   if (record === null || typeof record !== 'object' || Array.isArray(record)) throw new Failure('release record must be a JSON object');

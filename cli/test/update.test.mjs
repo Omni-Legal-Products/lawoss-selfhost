@@ -41,7 +41,7 @@ describe('release records', () => {
     assert.throws(() => validateRecord({ ...record, commit: 'main' }, '0.0.0'), /commit/);
     assert.throws(() => validateRecord({ ...record, extra: 1 }, '0.0.0'), /unknown field/);
     assert.deepEqual(Object.keys(record.files).sort(),
-      ['Caddyfile.template', 'bin/lawoss-selfhost.mjs', 'bin/lib.mjs', 'compose.yaml', 'services.json']);
+      ['Caddyfile.template', 'bin/lawoss-selfhost', 'bin/lawoss-selfhost.mjs', 'bin/lib.mjs', 'compose.yaml', 'services.json']);
     const { files } = record;
     assert.throws(() => validateRecord({ ...record, files: undefined }, '0.0.0'), /files/);
     const without = { ...files };
