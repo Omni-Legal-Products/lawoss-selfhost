@@ -227,3 +227,24 @@ export const printable = text => text.replace(/[^\P{C}\n]/gu, '');
 
 /** A timestamp usable as a directory name. */
 export const stamp = date => date.toISOString().replace(/[:.]/g, '-');
+
+// ---------------------------------------------------------------------------------------------
+// Build provenance (spec 5.7): the organization's CI attests the images it builds; the CLI checks
+// them whenever gh is installed. The proxy is the official Caddy image, which carries no such
+// attestation, so it is trusted through its pinned digest alone.
+
+export const ATTESTATION_OWNER = 'Omni-Legal-Products';
+export const ATTESTED_IMAGES = ['auth', 'hub'];
+
+/** Refuses the release when an attestation does not verify; without gh, prints one notice. */
+export async function verifyAttestations(ctx, images) {
+  if (!ctx.which('gh')) {
+    ctx.err('lawoss-selfhost: notice: gh is not installed, so build attestations were not verified; images are still pinned by digest');
+    return;
+  }
+  for (const name of ATTESTED_IMAGES) {
+    const result = await ctx.run(['gh', 'attestation', 'verify', `oci://${images[name]}`, '--owner', ATTESTATION_OWNER]);
+    if (result.code !== 0) throw new Failure(`build attestation of the ${name} image did not verify; refusing the release`);
+    ctx.err(`PASS attestation ${name}`);
+  }
+}

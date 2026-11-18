@@ -80,6 +80,8 @@ export function setup({ handler, probes, base = 'example.com' } = {}) {
       return { code: 0, stdout: '', stderr: '' };
     },
     chown(path, uid, gid) { chowns.push([path, uid, gid]); },
+    // Whether a command is on PATH; gh is absent unless a test says otherwise.
+    which: name => (state.which ?? (() => false))(name),
     out: line => out.push(line),
     err: line => err.push(line),
     get probes() { return state.probes; },

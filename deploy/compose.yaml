@@ -1,7 +1,8 @@
 # LAWOSS self-hosted stack: Caddy in front (ports 80 and 443 only, automatic certificates per
 # host), the authorization server and the MCP hub behind it on an internal network.
-# Lives in /opt/lawoss with .env (mode 0600) and the Caddyfile rendered from Caddyfile.template;
-# both are written by the setup CLI. No service mounts the Docker socket.
+# Lives in /opt/lawoss with .env (mode 0600), the Caddyfile rendered from Caddyfile.template and
+# brand/ (custom brand packs, read-only for auth); all are written by the setup CLI. No service
+# mounts the Docker socket.
 name: lawoss
 
 x-hardening: &hardening
@@ -61,6 +62,14 @@ services:
       - type: volume
         source: auth-data
         target: /data
+      # Custom brand packs, installed by the setup CLI; AUTH_CONFIG_JSON brand names /brand/<pack>.
+      # Without a brand, auth uses the LAWOSS pack built into the image.
+      - type: bind
+        source: ./brand
+        target: /brand
+        read_only: true
+        bind:
+          create_host_path: false
     tmpfs:
       - /tmp
     mem_limit: 512m

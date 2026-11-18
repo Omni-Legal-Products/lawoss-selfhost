@@ -73,6 +73,12 @@ lawoss-selfhost doctor
 lawoss-selfhost update --to VERSION --record releases/VERSION.json --record-sha256 HEX
 ```
 
+`init` and `update` accept a release only when its record hashes to the value pinned in the
+catalog; when `gh` is installed they also run `gh attestation verify` for the auth and hub images
+and refuse on failure. A custom brand pack (`init --brand /path/to/pack`, `brand check`,
+`brand preview`) is copied to `/opt/lawoss/brand/<name>`, which auth mounts read-only at
+`/brand`; without `--brand` the built-in LAWOSS pack applies.
+
 `lawoss-selfhost` without arguments lists every command. Tests: `cd cli && npm test`.
 
 ## License

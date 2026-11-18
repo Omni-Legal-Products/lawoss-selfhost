@@ -151,6 +151,16 @@ class ComposeTest(unittest.TestCase):
                       if m.get("type") == "volume"}
             self.assertEqual(mounts, {(volume, "/data")}, name)
 
+    def test_auth_reads_brand_packs_from_a_read_only_host_directory(self):
+        binds = [m for m in self.services["auth"].get("volumes", []) if m.get("type") == "bind"]
+        self.assertEqual(len(binds), 1, binds)
+        brand = binds[0]
+        self.assertEqual(os.path.basename(brand["source"]), "brand")
+        self.assertEqual(brand["target"], "/brand")
+        self.assertIs(brand.get("read_only"), True)
+        self.assertIs(brand.get("bind", {}).get("create_host_path"), False)
+        self.assertEqual([m for m in self.services["hub"].get("volumes", []) if m.get("type") == "bind"], [])
+
     def test_proxy_carries_the_auth_host_alias_on_the_internal_network(self):
         networks = self.compose["networks"]
         internal = [n for n, spec in networks.items() if spec.get("internal") is True]

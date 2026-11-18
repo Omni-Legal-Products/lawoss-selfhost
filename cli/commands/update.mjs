@@ -7,7 +7,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path';
 import {
   Failure, PROJECT, UsageError, VOLUMES, compose, deployment, options, paths, printable, readEnvFile, readRecord, requireImage,
-  setEnvVars, stamp, writePrivateFile,
+  setEnvVars, stamp, verifyAttestations, writePrivateFile,
 } from '../lib.mjs';
 import { runDoctor } from './doctor.mjs';
 
@@ -83,6 +83,7 @@ export async function update(args, ctx) {
   if (!values.to || !values.record || !values['record-sha256']) throw new UsageError('--to, --record and --record-sha256 are required');
   const record = readRecord(values.record, values['record-sha256'], values.to);
   const current = deployment(ctx.root);
+  await verifyAttestations(ctx, record.images);
   ctx.out(`release ${current.release} -> ${record.version}`);
   for (const name of Object.keys(IMAGE_VARS)) ctx.out(`${name} ${current.images[name] ?? '(none)'} -> ${record.images[name]}`);
   for (const line of printable(record.note).split('\n')) ctx.out(`note: ${line}`);

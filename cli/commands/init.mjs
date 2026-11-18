@@ -5,15 +5,15 @@ import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import {
   DNS_NAME, Failure, SERVICE_NAMES, UsageError, formatEnvValue, loadManifest, options, parseServiceList, paths,
-  randomKey, readRecord, resourceUrl, sha256, writePrivateFile,
+  randomKey, readRecord, resourceUrl, sha256, verifyAttestations, writePrivateFile,
 } from '../lib.mjs';
+import { checkPackArg, ensureBrandDir, resolvePack } from './brand.mjs';
 
 // Optional provider keys passed to the hub (compose.yaml); empty means unset.
 const PROVIDER_KEYS = [
   'CRZ_MISTRAL_OCR', 'MISTRAL_API_KEY', 'MISTRAL_OCR_MODEL', 'EURLEX_WS_DAILY_LIMIT', 'EURLEX_WS_USERNAME',
   'EURLEX_WS_PASSWORD', 'FS_API_KEY', 'USTAVNY_CLIENT_ID', 'USTAVNY_CLIENT_SECRET',
 ];
-const BRAND = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 
 /** A signing key as auth's oidc-provider takes it: an RSA private JWK with kid, alg and use. */
 function signingKey() {
@@ -21,7 +21,10 @@ function signingKey() {
   return { ...jwk, kid: randomUUID(), alg: 'RS256', use: 'sig' };
 }
 
-/** AUTH_CONFIG_JSON and HUB_CONFIG_JSON for one deployment (auth/src/server.ts Config, hub/src/main.ts HubConfig). */
+/**
+ * AUTH_CONFIG_JSON and HUB_CONFIG_JSON for one deployment (auth/src/server.ts Config, hub/src/main.ts
+ * HubConfig). `brand` is auth's pack path; undefined means auth's default LAWOSS pack.
+ */
 export function generateConfig({ base, services, brand }) {
   const issuer = `https://auth.${base}`;
   const secrets = Object.fromEntries(services.map(id => [id, randomKey(32)]));
@@ -35,7 +38,7 @@ export function generateConfig({ base, services, brand }) {
       scope: 'mcp:tools',
       secretHash: sha256(secrets[id]),
     }])),
-    ...(brand && brand !== 'default' ? { brand: `brand/${brand}` } : {}),
+    ...(brand !== undefined ? { brand } : {}),
   };
   const hub = { base, issuer, services, secrets };
   return { auth, hub };
@@ -60,7 +63,7 @@ export async function init(args, ctx) {
   });
   const base = values.base ?? '';
   if (!DNS_NAME.test(base)) throw new UsageError('--base must be a lowercase DNS name');
-  if (values.brand !== undefined && !BRAND.test(values.brand)) throw new UsageError('--brand must be the name of a pack in the auth image');
+  if (values.brand !== undefined) checkPackArg(values.brand);
   if (!values.record || !values['record-sha256']) throw new UsageError('--record and --record-sha256 are required');
   const p = paths(ctx.root);
   const manifest = loadManifest(ctx.root);
@@ -68,8 +71,12 @@ export async function init(args, ctx) {
   if (existsSync(p.env)) throw new Failure(`${p.env} already exists; init never overwrites it`);
   if (!existsSync(p.compose) || !existsSync(p.template)) throw new Failure('compose.yaml or Caddyfile.template is missing; install the release files first');
   const record = readRecord(values.record, values['record-sha256']);
+  await verifyAttestations(ctx, record.images);
 
-  const { auth, hub } = generateConfig({ base, services, brand: values.brand });
+  // compose.yaml mounts <root>/brand read-only and does not create it, so it always exists.
+  ensureBrandDir(ctx);
+  const brand = values.brand === undefined ? undefined : resolvePack(ctx, values.brand).config;
+  const { auth, hub } = generateConfig({ base, services, brand });
   const authHost = `auth.${base}`;
   const serviceHosts = services.map(id => `${id}.${base}`);
   const lines = [

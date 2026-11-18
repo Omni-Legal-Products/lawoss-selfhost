@@ -5,7 +5,8 @@
 // secret, key, activation link or password: its outputs are host names, check results and paths
 // of 0600 files. Exit codes: 0 success, 1 failure, 2 usage error.
 import { spawn } from 'node:child_process';
-import { chownSync, realpathSync } from 'node:fs';
+import { accessSync, chownSync, constants, realpathSync, statSync } from 'node:fs';
+import { delimiter, isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Failure, UsageError } from './lib.mjs';
 import { init } from './commands/init.mjs';
@@ -74,11 +75,25 @@ export function spawnRunner(argv, { inherit = false } = {}) {
   });
 }
 
+/** Whether an executable `name` is on PATH (absolute entries only). */
+export function onPath(name, path = process.env.PATH ?? '') {
+  return path.split(delimiter).filter(dir => isAbsolute(dir)).some(dir => {
+    try {
+      const file = join(dir, name);
+      accessSync(file, constants.X_OK);
+      return statSync(file).isFile();
+    } catch {
+      return false;
+    }
+  });
+}
+
 function realContext() {
   return {
     root: process.env.LAWOSS_ROOT || '/opt/lawoss',
     run: spawnRunner,
     chown: (path, uid, gid) => chownSync(path, uid, gid),
+    which: name => onPath(name),
     out: line => process.stdout.write(`${line}\n`),
     err: line => process.stderr.write(`${line}\n`),
     probes: realProbes(),
