@@ -3,13 +3,12 @@
 // verifies each against the runtime's own provenance manifest. Output layout (what the launcher expects):
 //   OUT/<plugin>/{runtime/**, runtime-config.json, scripts/run.mjs}
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkRuntime } from './runtime-verify.mjs';
 
 const usage = 'Usage: node fetch-runtimes.mjs --catalog DIR --catalog-commit SHA --out DIR [--services FILE]';
-const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const fail = message => { throw new Error(message); };
 
 function parseArgs(argv) {
@@ -46,30 +45,25 @@ const read = (catalog, commit, path) => git(catalog, ['show', `${commit}:${path}
 function fetchPlugin(args, plugin) {
   const base = `plugins/${plugin}`;
   const runtimePrefix = `${base}/runtime/`;
-  const files = new Map(); // output path relative to the plugin -> bytes
   const provenancePath = `${runtimePrefix}provenance.json`;
   let provenance;
-  try { provenance = JSON.parse(read(args.catalog, args.commit, provenancePath)); }
+  try { provenance = read(args.catalog, args.commit, provenancePath); }
   catch (error) { fail(`${plugin}: cannot read runtime/provenance.json (${error.message.split('\n')[0]})`); }
-  if (!provenance || typeof provenance.files !== 'object' || provenance.files === null ||
-      !/^[0-9a-f]{64}$/.test(provenance.configSha256 ?? ''))
-    fail(`${plugin}: runtime/provenance.json must contain files and configSha256`);
-
-  const actual = listFiles(args.catalog, args.commit, runtimePrefix)
+  const names = listFiles(args.catalog, args.commit, runtimePrefix)
     .map(path => path.slice(runtimePrefix.length)).filter(name => name !== 'provenance.json');
-  for (const name of actual)
-    if (!Object.hasOwn(provenance.files, name)) fail(`${plugin}: runtime contains an unlisted file: ${name}`);
-  for (const name of Object.keys(provenance.files))
-    if (!actual.includes(name)) fail(`${plugin}: runtime provenance lists a missing file: ${name}`);
-  for (const name of actual) {
-    const bytes = read(args.catalog, args.commit, `${runtimePrefix}${name}`);
-    if (sha256(bytes) !== provenance.files[name]) fail(`${plugin}: runtime file digest mismatch: ${name}`);
-    files.set(`runtime/${name}`, bytes);
-  }
-  files.set('runtime/provenance.json', read(args.catalog, args.commit, provenancePath));
-
   const config = read(args.catalog, args.commit, `${base}/runtime-config.json`);
-  if (sha256(config) !== provenance.configSha256) fail(`${plugin}: runtime-config.json digest mismatch`);
+  const files = new Map(); // output path relative to the plugin -> bytes
+  checkRuntime(plugin, {
+    provenance,
+    config,
+    names,
+    read: name => {
+      const bytes = read(args.catalog, args.commit, `${runtimePrefix}${name}`);
+      files.set(`runtime/${name}`, bytes);
+      return bytes;
+    },
+  });
+  files.set('runtime/provenance.json', provenance);
   files.set('runtime-config.json', config);
   files.set('scripts/run.mjs', read(args.catalog, args.commit, `${base}/scripts/run.mjs`));
   return files;

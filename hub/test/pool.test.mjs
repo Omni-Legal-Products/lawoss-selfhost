@@ -21,6 +21,7 @@ const manifest = {
   services: {
     echo: { plugin: 'echo', tools, env: ['ECHO_TOKEN'], stateEnv: 'ECHO_STATE_DIR' },
     other: { plugin: 'echo', tools, env: [] },
+    crash: { plugin: 'crash', tools, env: [] },
   },
 };
 // Principals as principalKey() builds them: JSON with slashes and quotes, never usable as a path.
@@ -39,6 +40,9 @@ const newDataDir = () => join(scratch, `data-${++dataCount}`);
 mkdirSync(join(runtimesDir, 'echo', 'scripts'), { recursive: true });
 writeFileSync(join(runtimesDir, 'echo', 'scripts', 'run.mjs'),
   `import ${JSON.stringify(pathToFileURL(join(here, 'fixtures', 'echo-runtime.mjs')).href)};\n`);
+// A runtime that dies before it answers initialize.
+mkdirSync(join(runtimesDir, 'crash', 'scripts'), { recursive: true });
+writeFileSync(join(runtimesDir, 'crash', 'scripts', 'run.mjs'), 'process.exit(7);\n');
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
 const pools = [];
@@ -235,6 +239,38 @@ describe('process pool', () => {
     await until(() => pool.size() === 0, 'the crashed process to leave the pool');
     const fresh = await call(pool, A, 'echo', 'env');
     assert.notEqual(fresh.pid, pid);
+  });
+
+  it('reports each runtime exit with its code or signal', async () => {
+    const exits = [];
+    const pool = makePool({ onExit: event => exits.push(event) });
+    await assert.rejects(call(pool, A, 'echo', 'exit'));
+    await until(() => exits.length === 1, 'the crash to be reported');
+    assert.deepEqual(exits[0], { id: 'echo', principal: A, code: 3, signal: null });
+    await call(pool, B, 'other', 'env');
+    await pool.stopPrincipal(B);
+    await until(() => exits.length === 2, 'the stop to be reported');
+    assert.equal(exits[1].id, 'other');
+    assert.equal(exits[1].principal, B);
+    assert.ok(exits[1].code !== null || exits[1].signal !== null);
+  });
+
+  it('reports a runtime that exits during start-up', async () => {
+    const exits = [];
+    const pool = makePool({ onExit: event => exits.push(event) });
+    await assert.rejects(pool.lease(A, 'crash'));
+    await until(() => exits.length === 1, 'the start-up crash to be reported');
+    assert.deepEqual(exits[0], { id: 'crash', principal: A, code: 7, signal: null });
+    assert.equal(pool.size(), 0);
+  });
+
+  it('stopAll closes every process of every principal', async () => {
+    const pool = makePool();
+    const a = await call(pool, A, 'echo', 'env');
+    const b = await call(pool, B, 'other', 'env');
+    await pool.stopAll();
+    assert.equal(pool.size(), 0);
+    await until(() => !alive(a.pid) && !alive(b.pid), 'all processes to exit');
   });
 
   it('stopPrincipal closes every process of that principal', async () => {

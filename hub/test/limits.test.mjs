@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
+import { ErrorCode } from '@modelcontextprotocol/sdk/types.js';
 import { DEFAULT_LIMITS, Limits, RetryableError } from '../dist/limits.js';
-import { RETRY_TEXT, TIMEOUT_TEXT } from '../dist/server.js';
+import { RETRY_CODE, RETRY_TEXT, TIMEOUT_TEXT } from '../dist/server.js';
 import { fakePool, rpc, startHub, startIntrospection } from './harness.mjs';
 
 const deferred = () => {
@@ -94,11 +95,20 @@ describe('hub limits and timeouts', () => {
       assert.equal(second.message.result, undefined);
       assert.equal(second.message.error.message, RETRY_TEXT);
       assert.equal(RETRY_TEXT, 'Príliš veľa požiadaviek. Skúste to o chvíľu znova.');
+      // A server-error code of its own, so clients can tell a retryable refusal from an internal error.
+      assert.equal(second.message.error.code, RETRY_CODE);
       assert.equal(pool.runtimeCalls.length, 1);
       // The hub holds a lease on the runtime for the whole call, and releases it.
       assert.equal(pool.leaseCalls, 1);
       assert.equal(pool.activeLeases, 0);
     });
+  });
+
+  it('the retry code is a server error of its own, never one the SDK client reinterprets', () => {
+    assert.equal(RETRY_CODE, -32029);
+    assert.ok(RETRY_CODE <= -32000 && RETRY_CODE >= -32099, 'implementation-defined server-error range');
+    for (const taken of [ErrorCode.RequestTimeout, ErrorCode.ConnectionClosed, ErrorCode.InternalError, -32002])
+      assert.notEqual(RETRY_CODE, taken);
   });
 
   it('a pool without an idle process maps to the same retry text on tools/list', async () => {
@@ -107,6 +117,7 @@ describe('hub limits and timeouts', () => {
     await withHub({ pool }, async (_pool, hub) => {
       const response = await rpc(hub.port, 'judikaty', 'full-token', 'tools/list');
       assert.equal(response.message.error.message, RETRY_TEXT);
+      assert.equal(response.message.error.code, RETRY_CODE);
     });
   });
 

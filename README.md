@@ -2,9 +2,9 @@
 
 Self-hosted LAWOSS MCP servers with a branded login, deployable by an AI agent.
 
-> Status: early. This repository currently contains only the authorization server (`auth/`).
-> The MCP hub, the setup CLI and Docker Compose follow in later releases. No container images
-> are published yet.
+> Status: early. This repository contains the authorization server (`auth/`), the MCP hub
+> (`hub/`) and the Compose deployment (`deploy/`). The setup CLI follows in a later release. No
+> container images are published yet.
 
 ## Contents
 
@@ -13,7 +13,8 @@ Self-hosted LAWOSS MCP servers with a branded login, deployable by an AI agent.
   (`auth/brand/default`); a deployment can select its own pack with the optional `brand` field of its configuration
   (preview a pack with `AUTH_BRAND=brand/<name> node dist/preview.js`).
   Exported from upstream commit `2e17cb822bdef433d9df7d09c3e36ea2e5d89f96`.
-- `deploy/.env.example`: placeholder configuration.
+- `deploy/compose.yaml`, `deploy/Caddyfile.template`, `deploy/.env.example`: the Compose stack
+  (Caddy with automatic certificates per host, auth, hub) and its placeholder configuration.
 
 ## Build and test
 
@@ -39,6 +40,22 @@ LAWOSS_RUNTIMES_DIR=/tmp/lawoss-runtimes node --test test/manifest.test.mjs
 ```
 
 CI runs the same steps in the `hub` job.
+
+The hub image (`docker build -t lawoss-hub:local -f hub/Dockerfile hub`) fetches the runtimes from
+the public catalog at that commit, warms the shared dependency cache once at build time and runs
+`node dist/main.js` as `node` with `HUB_CONFIG_JSON`; at every start it verifies the runtimes
+against their provenance again. `hub/test/image-smoke.sh` checks a built image offline.
+
+## Deployment files
+
+`deploy/compose.yaml` runs three hardened services (read-only root filesystems, all capabilities
+dropped, no new privileges, memory and process limits); only the proxy publishes ports 80 and 443.
+Check it with:
+
+```sh
+python3 -m unittest -v deploy/test/compose.test.py
+docker compose -f deploy/compose.yaml --env-file deploy/.env.example config -q
+```
 
 ## License
 

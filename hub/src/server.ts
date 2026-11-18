@@ -55,7 +55,8 @@ const MAX_REMEMBERED_TOKENS = 10_000;
 // The adapter's bearer syntax; other headers never authenticate, so they are never remembered.
 const BEARER = /^Bearer ([A-Za-z0-9\-._~+/]+=*)$/i;
 
-const principalHash = (principal: string): string =>
+/** Short, stable, non-reversible principal label for logs. */
+export const principalHash = (principal: string): string =>
   createHash('sha256').update(principal).digest('hex').slice(0, 16);
 
 function createServices(opts: HubOptions): Map<ServiceId, Service> {
@@ -81,6 +82,11 @@ export const INTERNAL_ERROR_TEXT = 'Služba je dočasne nedostupná. Skúste to 
 export const TIMEOUT_TEXT = 'Služba neodpovedala včas. Skúste to znova.';
 export const INVALID_PARAMS_TEXT = 'Neplatné argumenty nástroja.';
 export const RETRY_TEXT = 'Príliš veľa požiadaviek. Skúste to o chvíľu znova.';
+/**
+ * JSON-RPC server-error code (implementation-defined range) of the retryable refusal. Not -32000,
+ * -32001 or -32002, which the SDK uses for connection closed, request timeout and resource errors.
+ */
+export const RETRY_CODE = -32029;
 // Bounds the runtime tools/list pages read to check one allow-without schema.
 const MAX_LIST_PAGES = 20;
 
@@ -95,7 +101,7 @@ class PublicError extends Error {
 }
 
 function publicError(error: unknown): PublicError {
-  if (error instanceof RetryableError) return new PublicError(ErrorCode.InternalError, RETRY_TEXT);
+  if (error instanceof RetryableError) return new PublicError(RETRY_CODE, RETRY_TEXT);
   const code = error instanceof McpError ? error.code : undefined;
   if (code === ErrorCode.RequestTimeout) return new PublicError(ErrorCode.RequestTimeout, TIMEOUT_TEXT);
   if (code === ErrorCode.InvalidParams) return new PublicError(ErrorCode.InvalidParams, INVALID_PARAMS_TEXT);

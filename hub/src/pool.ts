@@ -1,3 +1,4 @@
+import type { ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
@@ -23,6 +24,15 @@ export interface PoolOptions {
   cacheDir?: string;
   /** PATH for runtimes; defaults to the hub's PATH. */
   path?: string;
+  /** Called once when a started runtime process exits, with its exit code or signal. */
+  onExit?(event: RuntimeExit): void;
+}
+
+export interface RuntimeExit {
+  id: ServiceId;
+  principal: string;
+  code: number | null;
+  signal: string | null;
 }
 
 export const DEFAULT_POOL = Object.freeze({ maxTotal: 40, maxPerService: 8, idleMs: 10 * 60_000 });
@@ -138,6 +148,11 @@ export class ProcessPool implements RuntimePool {
     return entry;
   }
 
+  /** Stops every runtime process, for example on shutdown. Never rejects. */
+  async stopAll(): Promise<void> {
+    await Promise.all([...this.entries.values()].map(entry => this.stop(entry)));
+  }
+
   async stopPrincipal(principal: string): Promise<void> {
     await Promise.all([...this.entries.values()].filter(entry => entry.principal === principal).map(entry => this.stop(entry)));
   }
@@ -181,14 +196,23 @@ export class ProcessPool implements RuntimePool {
       await Promise.all(evicted);
       await mkdir(dir, { recursive: true, mode: 0o700 });
       client.onclose = () => this.forget(entry);
-      await client.connect(new StdioClientTransport({
+      const transport = new StdioClientTransport({
         command: process.execPath,
         args: [launcher, ...(service.server ? ['--server', service.server] : []), 'mcp'],
         cwd: dir,
         env: env as Record<string, string>,
         // Runtime output may contain arguments or results, which the hub never logs.
         stderr: 'ignore',
-      }));
+      });
+      // Watch the child from spawn on, so that a runtime dying during initialize is reported too
+      // (once connect fails, the transport has already dropped its child process).
+      const start = transport.start.bind(transport);
+      transport.start = () => {
+        const started = start();
+        this.watchExit(entry, transport);
+        return started;
+      };
+      await client.connect(transport);
     } catch (error) {
       this.forget(entry);
       await client.close().catch(() => {});
@@ -198,6 +222,21 @@ export class ProcessPool implements RuntimePool {
     entry.started = true;
     this.arm(entry);
     return client;
+  }
+
+  /**
+   * Reports the runtime's exit code. The SDK transport drops the code, so the hook reads its child
+   * process (a private field; the SDK version is pinned and the pool tests cover this).
+   */
+  private watchExit(entry: Entry, transport: StdioClientTransport): void {
+    const onExit = this.opts.onExit;
+    const child = (transport as unknown as { _process?: ChildProcess })._process;
+    if (!onExit || !child) return;
+    const report = (code: number | null, signal: NodeJS.Signals | null) => {
+      try { onExit({ id: entry.id, principal: entry.principal, code, signal }); } catch { /* logging must not break the pool */ }
+    };
+    if (child.exitCode !== null || child.signalCode !== null) report(child.exitCode, child.signalCode);
+    else child.once('exit', report);
   }
 
   /** Counts calls in flight and restarts the idle timer around every request the hub makes. */
