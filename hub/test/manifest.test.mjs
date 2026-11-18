@@ -105,8 +105,13 @@ describe('service manifest', () => {
         env: { ...process.env, LAWOSS_CACHE_DIR: cache, LAWOSS_STATE_DIR: state },
       });
       assert.equal(result.status, 0, `${id}: launcher failed: ${result.stderr}`);
-      const reported = JSON.parse(result.stdout).tools.map(tool => tool.name).sort();
-      assert.deepEqual(reported, Object.keys(service.tools).sort(), `${id}: runtime tools differ from the manifest`);
+      const reported = JSON.parse(result.stdout).tools.map(tool => tool.name);
+      const listed = Object.keys(service.tools);
+      const missing = reported.filter(name => !listed.includes(name)).sort();
+      const extra = listed.filter(name => !reported.includes(name)).sort();
+      assert.ok(missing.length === 0 && extra.length === 0,
+        `${id}: missing from the manifest (reported by the runtime): [${missing.join(', ')}]; ` +
+        `extra in the manifest (not reported): [${extra.join(', ')}]`);
     }
   });
 });
@@ -174,6 +179,15 @@ describe('fetch-runtimes', () => {
     const missing = run(fixture('missing', plugin => rmSync(join(plugin, 'runtime', 'package.json'))));
     assert.notEqual(missing.status, 0);
     assert.match(missing.stderr, /package\.json/);
+  });
+
+  it('fetch rejects a plugin value that is not a slug', () => {
+    const f = fixture('slug');
+    writeFileSync(f.services, JSON.stringify({ catalogCommit: f.sha, services: { demo: { plugin: '../x' } } }));
+    const result = run(f);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /plugin/);
+    assert.equal(existsSync(join(scratch, 'x')), false);
   });
 
   it('fetch fails when the commit differs from services.json', () => {

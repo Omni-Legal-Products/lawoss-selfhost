@@ -24,6 +24,22 @@ npm test
 docker build -t lawoss-auth:local .
 ```
 
+## Hub
+
+`hub/` holds the reviewed service manifest (`hub/services.json`) and the runtime fetcher. The
+manifest must list exactly the tools each runtime reports. Cross-check it against a local checkout
+of the public catalog at the recorded commit (this starts every runtime once and may run `npm ci`
+for non-bundled ones; no tool is called):
+
+```sh
+cd hub && npm ci --ignore-scripts && npm test
+COMMIT=$(node -p "require('./services.json').catalogCommit")
+node scripts/fetch-runtimes.mjs --catalog /path/to/lawoss-marketplace --catalog-commit "$COMMIT" --out /tmp/lawoss-runtimes
+LAWOSS_RUNTIMES_DIR=/tmp/lawoss-runtimes node --test test/manifest.test.mjs
+```
+
+CI runs the same steps in the `hub` job.
+
 ## License
 
 AGPL-3.0, see `LICENSE`. Fonts in `auth/brand/*/fonts` are under the SIL Open Font License 1.1.

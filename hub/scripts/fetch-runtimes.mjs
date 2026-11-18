@@ -81,6 +81,9 @@ function main() {
   if (manifest.catalogCommit !== undefined && manifest.catalogCommit !== args.commit)
     fail(`--catalog-commit ${args.commit} differs from catalogCommit ${manifest.catalogCommit} in ${args.services}`);
   const plugins = [...new Set(Object.values(manifest.services ?? {}).map(service => service.plugin))].sort();
+  // Same slug rule as loadManifest, checked before the value reaches a git spec or a path.
+  for (const plugin of plugins)
+    if (typeof plugin !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(plugin)) fail(`Invalid plugin value in services: ${JSON.stringify(plugin)}`);
   if (plugins.length === 0) fail('No services listed');
   // Verify everything first so a failure leaves no partial output.
   const bundles = plugins.map(plugin => [plugin, fetchPlugin(args, plugin)]);
