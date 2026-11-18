@@ -1,0 +1,33 @@
+name: ci
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  auth:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: auth
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.22.1
+          cache: npm
+          cache-dependency-path: auth/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - name: Resource-server adapter
+        run: |
+          npx tsc -p resource-server/tsconfig.json
+          node --test resource-server/skallars-auth.test.mjs
+      - run: npm audit --omit=dev --audit-level=high
+      - name: Export manifest
+        run: |
+          sed 's#  #  ./#' EXPORT_MANIFEST.sha256 | sha256sum --check --quiet
+      - run: docker build -t lawoss-auth:test .
+  agents-mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - run: cmp AGENTS.md CLAUDE.md

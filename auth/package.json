@@ -1,0 +1,26 @@
+{
+  "name": "mcp-auth-server",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.22.1 <25"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "start": "node dist/server.js",
+    "admin": "node dist/admin.js"
+  },
+  "dependencies": {
+    "express": "5.2.1",
+    "express-rate-limit": "8.7.0",
+    "oidc-provider": "9.12.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.0.0",
+    "@types/oidc-provider": "^9.0.0",
+    "typescript": "^5.9.0"
+  }
+}
