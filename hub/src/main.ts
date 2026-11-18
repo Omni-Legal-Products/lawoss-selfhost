@@ -1,7 +1,8 @@
 // Process entry point of the hub image: reads HUB_CONFIG_JSON, verifies the baked runtimes against
 // their provenance, builds the process pool and limits, and serves the hub on PORT.
+import { createHash, randomBytes } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -17,6 +18,7 @@ import { loadManifest } from './manifest.js';
 import type { Manifest, ServiceId } from './manifest.js';
 import { DEFAULT_POOL, ProcessPool, allowlistedEnv } from './pool.js';
 import type { RuntimeExit } from './pool.js';
+import { resourceUrl } from './routing.js';
 import { DEFAULT_CALL_TIMEOUT_MS, createHub, principalHash } from './server.js';
 
 /** The reviewed manifest baked into the image next to dist/; deliberately not configurable. */
@@ -275,6 +277,53 @@ export async function listRuntimeTools(id: string, env: NodeJS.ProcessEnv = proc
   }
 }
 
+/** How one service's introspection path answered a junk token. */
+export type IntrospectionResult = 'ok' | 'secret-mismatch' | 'unreachable' | 'unexpected';
+
+const INTROSPECTION_TIMEOUT_MS = 5_000;
+
+/**
+ * Operator check used by the setup CLI's doctor: for every enabled service, posts a random junk
+ * token to the issuer's introspection endpoint with that service's secret, exactly as the adapter
+ * does (same URL, so the same proxy alias and certificate). 200 {"active":false} means the path
+ * and the secret work; 401 means hub and auth disagree about the secret; a network or TLS error
+ * means the path is broken. Returns result classes only, never a secret or a response body.
+ */
+export async function checkIntrospection(
+  config: HubConfig,
+  options: { fetch?: typeof fetch } = {},
+): Promise<Record<ServiceId, IntrospectionResult>> {
+  const send = options.fetch ?? fetch;
+  const results: Record<ServiceId, IntrospectionResult> = {};
+  for (const id of config.services) {
+    let result: IntrospectionResult;
+    try {
+      const response = await send(`${config.issuer}/resource/introspect`, {
+        method: 'POST',
+        redirect: 'error',
+        signal: AbortSignal.timeout(INTROSPECTION_TIMEOUT_MS),
+        headers: { 'content-type': 'application/x-www-form-urlencoded', authorization: `Bearer ${config.secrets[id]}` },
+        body: new URLSearchParams({ resource: resourceUrl(id, config.base), token: randomBytes(32).toString('base64url') }).toString(),
+      });
+      if (response.status === 401) result = 'secret-mismatch';
+      else if (response.status !== 200) result = 'unexpected';
+      else {
+        let body: unknown;
+        try { body = await response.json(); } catch { body = undefined; }
+        result = body !== null && typeof body === 'object' && (body as { active?: unknown }).active === false ? 'ok' : 'unexpected';
+      }
+      await response.body?.cancel().catch(() => {});
+    } catch {
+      result = 'unreachable';
+    }
+    results[id] = result;
+  }
+  return results;
+}
+
+/** SHA-256 of the services.json baked into the image, for the doctor's comparison with the host copy. */
+export const manifestSha256 = (): string => createHash('sha256').update(readFileSync(SERVICES_PATH)).digest('hex');
+
 const invokedDirectly = (): boolean => {
   if (!process.argv[1]) return false;
   try { return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href; } catch { return false; }
@@ -289,6 +338,18 @@ if (invokedDirectly() && process.argv[2] === '--list-tools') {
     process.stderr.write(`hub --list-tools: ${error instanceof Error ? error.message : 'failed'}\n`);
     process.exitCode = error instanceof UsageError ? 2 : 1;
   });
+} else if (invokedDirectly() && process.argv[2] === '--check-introspection') {
+  Promise.resolve().then(() => checkIntrospection(parseHubConfig(process.env.HUB_CONFIG_JSON, loadManifest(SERVICES_PATH))))
+    .then(results => {
+      process.stdout.write(`${JSON.stringify({ introspection: results })}\n`);
+      process.exitCode = Object.values(results).every(result => result === 'ok') ? 0 : 1;
+    }, (error: unknown) => {
+      // Config errors name fields only.
+      process.stderr.write(`hub --check-introspection: ${error instanceof ConfigError ? error.message : 'failed'}\n`);
+      process.exitCode = 1;
+    });
+} else if (invokedDirectly() && process.argv[2] === '--manifest-sha256') {
+  process.stdout.write(`${JSON.stringify({ manifestSha256: manifestSha256() })}\n`);
 } else if (invokedDirectly()) {
   main().catch((error: unknown) => {
     // Config errors carry no values; other start-up errors name files or variables only.

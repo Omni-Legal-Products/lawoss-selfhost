@@ -24,6 +24,10 @@ function nextRecord(root, mutate = record => record) {
 
 const isSnapshot = argv => argv[0] === 'docker' && argv[1] === 'run';
 const isUp = argv => argv.includes('up');
+// One label per runner call, for the order assertions.
+const kindOf = argv => isSnapshot(argv) ? 'snapshot' : isUp(argv) ? 'up'
+  : argv.includes('--list-tools') ? 'tools' : argv.includes('--check-introspection') ? 'introspection'
+    : argv.includes('--manifest-sha256') ? 'manifest' : 'other';
 
 describe('release records', () => {
   it('the example release record matches the schema', () => {
@@ -72,8 +76,7 @@ describe('update and rollback', () => {
     assert.equal(vars.LAWOSS_AUTH_IMAGE, `lawoss-auth@sha256:${digest('1')}`);
     assert.equal(vars.LAWOSS_RELEASE, '0.0.1');
     assert.equal(statSync(join(t.root, '.env')).mode & 0o777, 0o600);
-    const kinds = t.calls.map(argv => isSnapshot(argv) ? 'snapshot' : isUp(argv) ? 'up' : argv.includes('--list-tools') ? 'tools' : 'other');
-    assert.deepEqual(kinds, ['snapshot', 'snapshot', 'snapshot', 'up', 'tools']);
+    assert.deepEqual(t.calls.map(kindOf), ['snapshot', 'snapshot', 'snapshot', 'up', 'introspection', 'manifest', 'tools']);
     for (const argv of t.calls.filter(isSnapshot)) {
       const volume = argv[argv.indexOf('-v') + 1];
       assert.match(volume, /^lawoss_(auth|hub|caddy)-data:\/source\/(auth|hub|caddy)-data:ro$/);
@@ -98,8 +101,7 @@ describe('update and rollback', () => {
     const healthy = healthyProbes('example.com');
     t.state.probes = { ...healthy, async fetch() { return { status: 502, headers: new Headers(), json: async () => ({}) }; } };
     assert.equal(await t.cli('update', '--to', '0.0.1', '--record', path, '--record-sha256', sha), 1);
-    const kinds = t.calls.map(argv => isSnapshot(argv) ? 'snapshot' : isUp(argv) ? 'up' : argv.includes('--list-tools') ? 'tools' : 'other');
-    assert.deepEqual(kinds, ['snapshot', 'snapshot', 'snapshot', 'up', 'tools', 'up']);
+    assert.deepEqual(t.calls.map(kindOf), ['snapshot', 'snapshot', 'snapshot', 'up', 'introspection', 'manifest', 'tools', 'up']);
     assert.deepEqual(readFileSync(join(t.root, '.env')), before, 'the previous .env is restored byte for byte');
     assert.equal(statSync(join(t.root, '.env')).mode & 0o777, 0o600);
     assert.match(t.err.join('\n'), /rolled back to 0\.0\.0/);

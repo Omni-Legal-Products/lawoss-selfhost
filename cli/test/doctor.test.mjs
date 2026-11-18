@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { readEnvFile } from '../lib.mjs';
-import { SENTINEL, composeBase, initialized, listToolsAnswer, toolsOf } from './helpers.mjs';
+import { SENTINEL, composeBase, initialized, introspectionAnswer, listToolsAnswer, manifestAnswer, toolsOf } from './helpers.mjs';
 
 // Every value in .env that could be secret: the whole JSON values and every string inside them.
 function secretsOf(root) {
@@ -28,10 +28,16 @@ describe('doctor', () => {
       'PASS issuer metadata auth.example.com',
       'PASS resource metadata crz.example.com', 'PASS 401 challenge crz.example.com',
       'PASS resource metadata orsr.example.com', 'PASS 401 challenge orsr.example.com',
+      'PASS introspection crz', 'PASS introspection orsr',
+      'PASS manifest services.json',
       'PASS tools crz', 'PASS tools orsr',
     ]);
-    assert.deepEqual(t.calls, ['crz', 'orsr'].map(id =>
-      [...composeBase(t.root), 'run', '--rm', '--no-deps', 'hub', 'node', 'dist/main.js', '--list-tools', id]));
+    const hubRun = (...args) => [...composeBase(t.root), 'run', '--rm', '--no-deps', 'hub', 'node', 'dist/main.js', ...args];
+    assert.deepEqual(t.calls, [
+      hubRun('--check-introspection'),
+      hubRun('--manifest-sha256'),
+      ...['crz', 'orsr'].map(id => hubRun('--list-tools', id)),
+    ]);
   });
 
   it('doctor never prints values from .env', async () => {
@@ -88,5 +94,36 @@ describe('doctor', () => {
     assert.equal(await t.cli('doctor'), 1);
     assert.ok(t.out.includes('FAIL 401 challenge crz.example.com'));
     assert.ok(![...t.out, ...t.err].join('\n').includes(SENTINEL));
+  });
+
+  it('fails introspection per service: a secret mismatch and a broken path are told apart', async () => {
+    const t = await initialized('crz,orsr');
+    t.state.handler = argv => argv.includes('--check-introspection')
+      ? introspectionAnswer(t.root, { crz: 'secret-mismatch', orsr: 'unreachable' }) : undefined;
+    assert.equal(await t.cli('doctor'), 1);
+    assert.ok(t.out.includes('FAIL introspection crz: the hub and auth hold different introspection secrets'), t.out.join('\n'));
+    assert.ok(t.out.includes('FAIL introspection orsr: the hub cannot reach auth at its public origin'), t.out.join('\n'));
+    assert.ok(t.out.includes('PASS tools crz'));
+  });
+
+  it('fails every introspection check when the check cannot run, and an unreadable answer is not a pass', async () => {
+    const t = await initialized('crz,orsr');
+    t.state.handler = argv => argv.includes('--check-introspection') ? { code: 125, stdout: SENTINEL, stderr: SENTINEL } : undefined;
+    assert.equal(await t.cli('doctor'), 1);
+    assert.ok(t.out.includes('FAIL introspection crz: the check did not run (exit 125)'), t.out.join('\n'));
+    assert.ok(t.out.includes('FAIL introspection orsr: the check did not run (exit 125)'));
+    t.state.handler = argv => argv.includes('--check-introspection')
+      ? { code: 0, stdout: JSON.stringify({ introspection: { crz: 'ok' } }), stderr: '' } : undefined;
+    assert.equal(await t.cli('doctor'), 1);
+    assert.ok(t.out.includes('PASS introspection crz'));
+    assert.ok(t.out.includes('FAIL introspection orsr: no answer for this service'));
+    assert.ok(![...t.out, ...t.err].join('\n').includes(SENTINEL));
+  });
+
+  it('fails when the hub image carries a different services.json than the host', async () => {
+    const t = await initialized('crz');
+    t.state.handler = argv => argv.includes('--manifest-sha256') ? manifestAnswer(t.root, 'f'.repeat(64)) : undefined;
+    assert.equal(await t.cli('doctor'), 1);
+    assert.ok(t.out.includes('FAIL manifest services.json: the hub image carries a different services.json than the host'), t.out.join('\n'));
   });
 });

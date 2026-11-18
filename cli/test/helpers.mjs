@@ -80,6 +80,18 @@ export function healthyProbes(base) {
   };
 }
 
+/** The hub's `--check-introspection` answer: every enabled service (from .env) passes unless overridden. */
+export function introspectionAnswer(root, overrides = {}) {
+  const services = /^LAWOSS_SERVICES=(.*)$/m.exec(readFileSync(join(root, '.env'), 'utf8'))?.[1].split(',') ?? [];
+  const introspection = Object.fromEntries(services.map(id => [id, overrides[id] ?? 'ok']));
+  const passed = Object.values(introspection).every(result => result === 'ok');
+  return { code: passed ? 0 : 1, stdout: `${JSON.stringify({ introspection })}\n`, stderr: '' };
+}
+
+/** The hub's `--manifest-sha256` answer: the image carries the host's services.json unless told otherwise. */
+export const manifestAnswer = (root, digest = sha256(readFileSync(join(root, 'services.json')))) =>
+  ({ code: 0, stdout: `${JSON.stringify({ manifestSha256: digest })}\n`, stderr: '' });
+
 /** The hub's `--list-tools` answer for a service, as the fake runner returns it. */
 export const listToolsAnswer = (id, tools = toolsOf(id)) => ({ code: 0, stdout: `${JSON.stringify({ service: id, tools })}\n`, stderr: '' });
 
@@ -114,6 +126,8 @@ export function setup({ handler, probes, base = 'example.com' } = {}) {
       if (answer) return answer;
       const at = argv.indexOf('--list-tools');
       if (at >= 0) return listToolsAnswer(argv[at + 1]);
+      if (argv.includes('--check-introspection')) return introspectionAnswer(root);
+      if (argv.includes('--manifest-sha256')) return manifestAnswer(root);
       // A snapshot container: tar writes its archive into the mounted directory with a loose mode.
       const snapshot = argv.find(arg => arg.endsWith(':/snapshot'));
       if (snapshot && argv.includes('tar')) {
