@@ -143,11 +143,14 @@ export function setup({ handler, probes, base = 'example.com' } = {}) {
   return { root, ctx, calls, chowns, out, err, state, cli, record, recordSha, secrets };
 }
 
+/** The certificate contact every test deployment uses. */
+export const ACME_EMAIL = 'ops@example.com';
+
 /** setup() plus a successful init for `services`. */
 export async function initialized(services = 'crz,orsr', options = {}) {
   const t = setup(options);
   const code = await t.cli('init', '--base', options.base ?? 'example.com', '--services', services,
-    '--record', t.record, '--record-sha256', t.recordSha);
+    '--acme-email', ACME_EMAIL, '--record', t.record, '--record-sha256', t.recordSha);
   if (code !== 0) throw new Error(`init failed: ${t.err.join('\n')}`);
   return t;
 }

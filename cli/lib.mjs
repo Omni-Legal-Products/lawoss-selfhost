@@ -38,6 +38,8 @@ export const SERVICE_NAMES = Object.freeze({
 
 // The hub's rule for the base domain (hub/src/main.ts).
 export const DNS_NAME = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+// A certificate contact e-mail that Caddy reads as one token: no whitespace, braces or quotes.
+export const ACME_EMAIL = /^[A-Za-z0-9._%+-]{1,64}@(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 // An account name that auth accepts both as a user name and as a tenant, and that is a safe file name.
 export const ACCOUNT = /^[a-z0-9][a-z0-9_-]{2,63}$/;
 const SERVICE_ID = /^[a-z0-9]{1,32}$/;
@@ -180,9 +182,11 @@ export function deployment(root) {
   if (!base || !DNS_NAME.test(base)) throw new Failure('.env has no valid LAWOSS_BASE; run init again on a new server');
   const services = String(vars.LAWOSS_SERVICES ?? '').split(',').filter(Boolean);
   if (!services.length || services.some(id => !SERVICE_ID.test(id))) throw new Failure('.env has no valid LAWOSS_SERVICES');
+  const acmeEmail = vars.LAWOSS_ACME_EMAIL;
   return {
     base,
     services,
+    acmeEmail: typeof acmeEmail === 'string' && ACME_EMAIL.test(acmeEmail) ? acmeEmail : undefined,
     issuer: `https://auth.${base}`,
     release: vars.LAWOSS_RELEASE ?? 'unknown',
     images: { auth: vars.LAWOSS_AUTH_IMAGE, hub: vars.LAWOSS_HUB_IMAGE, proxy: vars.LAWOSS_PROXY_IMAGE },
@@ -190,6 +194,36 @@ export function deployment(root) {
 }
 
 export const resourceUrl = (id, base) => `https://${id}.${base}/mcp`;
+
+/**
+ * The Caddyfile: the global options with the certificate contact, the auth site and one copy of
+ * the SERVICES section per enabled service.
+ */
+export function renderCaddyfile(template, { base, services, acmeEmail }) {
+  if (!ACME_EMAIL.test(acmeEmail ?? '')) throw new Failure('.env has no valid LAWOSS_ACME_EMAIL for the Caddyfile');
+  const section = /^# \{\{#SERVICES\}\}\n([\s\S]*?)^# \{\{\/SERVICES\}\}\n/m;
+  const match = section.exec(template);
+  if (!match) throw new Failure('Caddyfile.template has no SERVICES section');
+  const blocks = services.map(id => match[1].replaceAll('{{SERVICE_HOST}}', `${id}.${base}`)).join('');
+  return (template.slice(0, match.index) + blocks + template.slice(match.index + match[0].length))
+    .replaceAll('{{AUTH_HOST}}', `auth.${base}`).replaceAll('{{ACME_EMAIL}}', acmeEmail);
+}
+
+/** Renders <root>/Caddyfile from <root>/Caddyfile.template; root-owned 0644, replaced atomically. */
+export function writeCaddyfile(ctx, settings) {
+  const p = paths(ctx.root);
+  const text = renderCaddyfile(readFileSync(p.template, 'utf8'), settings);
+  const temp = join(ctx.root, `.Caddyfile.${randomKey(9)}.tmp`);
+  try {
+    writeFileSync(temp, text, { flag: 'wx', mode: 0o644 });
+    chmodSync(temp, 0o644);
+    ctx.chown(temp, 0, 0);
+    renameSync(temp, p.caddyfile);
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
+  }
+}
 
 export function requireImage(ref, name) {
   if (typeof ref !== 'string' || !IMAGE.test(ref)) throw new Failure(`.env has no ${name} image pinned by digest`);

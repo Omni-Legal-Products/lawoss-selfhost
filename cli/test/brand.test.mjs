@@ -171,7 +171,7 @@ describe('brand set', () => {
 });
 
 describe('init --brand', () => {
-  const init = (t, ...extra) => t.cli('init', '--base', 'example.com', '--services', 'crz', ...extra, '--record', t.record, '--record-sha256', t.recordSha);
+  const init = (t, ...extra) => t.cli('init', '--base', 'example.com', '--services', 'crz', '--acme-email', 'ops@example.com', ...extra, '--record', t.record, '--record-sha256', t.recordSha);
 
   it('without a pack, auth uses its default LAWOSS pack and the mounted directory still exists', async () => {
     const t = setup();

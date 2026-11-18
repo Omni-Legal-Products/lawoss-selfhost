@@ -19,7 +19,7 @@ import { update, rollback } from './commands/update.mjs';
 import { setKey, unsetKey } from './commands/keys.mjs';
 
 export const USAGE = `Usage: lawoss-selfhost COMMAND
-  init --base BASE --services LIST [--brand PACK] --record PATH --record-sha256 HEX
+  init --base BASE --services LIST --acme-email EMAIL [--brand PACK] --record PATH --record-sha256 HEX
   brand check PACK [--record PATH --record-sha256 HEX] | brand preview PACK [...] | brand set PACK
   invite USER SERVICES
   grant USER SERVICES | revoke USER SERVICES | disable USER | list

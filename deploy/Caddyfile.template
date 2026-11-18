@@ -1,10 +1,15 @@
-# Template for /opt/lawoss/Caddyfile, rendered by the setup CLI:
+# Template for /opt/lawoss/Caddyfile, rendered by the setup CLI (init, update, services, restore):
+#   ACME_EMAIL    is replaced by the certificate contact e-mail (init --acme-email);
 #   AUTH_HOST     is replaced by auth.<base>;
 #   SERVICE_HOST  is replaced by <id>.<base>, and the section between the SERVICES markers is
 #                 written once per enabled service.
 # Every site gets its own automatic certificate. Caddy passes the Host header to the upstream
 # unchanged: the hub routes by Host, the resource-server adapter checks it, and auth answers only
 # its own host. Caddy sets the forwarding headers itself and does not trust client-sent ones.
+
+{
+	email {{ACME_EMAIL}}
+}
 
 {{AUTH_HOST}} {
 	reverse_proxy auth:3000

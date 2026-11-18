@@ -68,7 +68,7 @@ files. Account, backup and snapshot work runs in one-off containers; no containe
 socket.
 
 ```sh
-lawoss-selfhost init --base example.com --services crz,orsr --record releases/VERSION.json --record-sha256 HEX
+lawoss-selfhost init --base example.com --services crz,orsr --acme-email ops@example.com --record releases/VERSION.json --record-sha256 HEX
 lawoss-selfhost invite alice crz,orsr      # prints /opt/lawoss/handoff/alice.link
 lawoss-selfhost set-key FS_API_KEY         # the value is read from stdin, without echo
 lawoss-selfhost doctor
