@@ -1,0 +1,26 @@
+{
+  "productName": "LAWOSS",
+  "accountLabel": "účet LAWOSS",
+  "locale": "sk",
+  "assets": {
+    "logo": "logo.svg",
+    "logoSize": { "width": 182, "height": 42 },
+    "logoDark": "logo-dark.svg",
+    "mark": "mark.svg",
+    "artwork": "mark.svg",
+    "fonts": [
+      { "file": "fonts/IBMPlexSans-Variable.woff2", "family": "IBM Plex Sans", "weight": "100 700" },
+      { "file": "fonts/IBMPlexMono-Regular.woff2", "family": "IBM Plex Mono", "weight": "400" },
+      { "file": "fonts/InstrumentSerif-Regular.woff2", "family": "Instrument Serif", "weight": "400" }
+    ],
+    "tokens": "tokens.css"
+  },
+  "colors": {
+    "primary": "#0A0E14",
+    "primaryDeep": "#42586E",
+    "accent": "#B98D3F",
+    "ink": "#0A0E14",
+    "surface": "#F4F1EA",
+    "line": "#42586E"
+  }
+}
