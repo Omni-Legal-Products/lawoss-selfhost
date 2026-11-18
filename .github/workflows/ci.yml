@@ -72,6 +72,18 @@ jobs:
         run: |
           docker run --rm -i --read-only --network none --cap-drop ALL --security-opt no-new-privileges:true \
             --tmpfs /tmp -v lawoss-hub-smoke-data:/data --entrypoint sh lawoss-hub:test -s < hub/test/image-smoke.sh
+  cli:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.22.1
+      # Standard library only: no install step, no lockfile.
+      - run: npm test
   deploy:
     runs-on: ubuntu-latest
     steps:

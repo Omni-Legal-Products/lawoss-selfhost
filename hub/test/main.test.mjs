@@ -6,7 +6,7 @@ import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { exitLogLine, parseHubConfig, verifyRuntimes } from '../dist/main.js';
 import { loadManifest } from '../dist/manifest.js';
 
@@ -192,5 +192,33 @@ describe('hub entry point: serving', () => {
     assert.equal(line.signal, null);
     assert.match(line.principal, /^[0-9a-f]{16}$/);
     assert.ok(!JSON.stringify(line).includes('alice'));
+  });
+});
+
+describe('hub entry point: --list-tools', () => {
+  // The verified crz runtime whose launcher starts the echo fixture over stdio (SDK from hub/node_modules).
+  const echoRuntimes = label => runtimes(label, plugin => writeFileSync(join(plugin, 'scripts', 'run.mjs'),
+    `import ${JSON.stringify(pathToFileURL(join(here, 'fixtures', 'echo-runtime.mjs')).href)};\n`));
+  const listTools = (args, env) => spawnSync(process.execPath, [mainScript, '--list-tools', ...args],
+    { env, encoding: 'utf8', timeout: 30_000 });
+
+  it('prints the tool names a runtime reports over stdio, without needing or printing HUB_CONFIG_JSON', () => {
+    const result = listTools(['crz'], baseEnv({
+      LAWOSS_RUNTIMES_DIR: echoRuntimes('list-tools'),
+      HUB_CONFIG_JSON: JSON.stringify(config()),
+    }));
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { service: 'crz', tools: ['env', 'exit', 'list', 'sleep', 'write'] });
+    assert.ok(!result.stdout.includes(SENTINEL) && !result.stderr.includes(SENTINEL));
+  });
+
+  it('refuses an unknown service and a runtime that does not verify', () => {
+    const unknown = listTools(['nope'], baseEnv({ LAWOSS_RUNTIMES_DIR: echoRuntimes('list-unknown') }));
+    assert.equal(unknown.status, 2);
+    assert.match(unknown.stderr, /unknown service/);
+    const bad = runtimes('list-bad', p => writeFileSync(join(p, 'runtime', 'dist', 'index.js'), 'x\n'));
+    const failed = listTools(['crz'], baseEnv({ LAWOSS_RUNTIMES_DIR: bad }));
+    assert.equal(failed.status, 1);
+    assert.match(failed.stderr, /digest mismatch/);
   });
 });
