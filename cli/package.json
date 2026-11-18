@@ -1,0 +1,15 @@
+{
+  "name": "lawoss-selfhost-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "bin": {
+    "lawoss-selfhost": "lawoss-selfhost.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

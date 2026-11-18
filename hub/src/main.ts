@@ -1,12 +1,15 @@
 // Process entry point of the hub image: reads HUB_CONFIG_JSON, verifies the baked runtimes against
 // their provenance, builds the process pool and limits, and serves the hub on PORT.
 import { once } from 'node:events';
-import { realpathSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import express from 'express';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { DEFAULT_INHERITED_ENV_VARS, StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { NextFunction, Request, Response } from 'express';
 import { verifyRuntimeDir } from '../scripts/runtime-verify.mjs';
 import { DEFAULT_LIMITS, Limits } from './limits.js';
@@ -220,12 +223,73 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<Server
   return server;
 }
 
+/** A usage error of the --list-tools mode (exit code 2). */
+export class UsageError extends Error {}
+
+/**
+ * Operator check used by the setup CLI's doctor: starts one service's verified runtime over stdio,
+ * exactly as the pool launches it but in a throwaway state directory, and returns the tool names it
+ * reports to tools/list. It reads no HUB_CONFIG_JSON and passes the runtime only its allowlisted
+ * provider variables.
+ */
+export async function listRuntimeTools(id: string, env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
+  const manifest = loadManifest(SERVICES_PATH);
+  if (!/^[a-z0-9]{1,32}$/.test(id) || !Object.hasOwn(manifest.services, id)) throw new UsageError('unknown service');
+  const runtimesDir = requiredPath(env, 'LAWOSS_RUNTIMES_DIR');
+  const cacheDir = requiredPath(env, 'LAWOSS_CACHE_DIR');
+  verifyRuntimes(runtimesDir, manifest, [id]);
+  const service = manifest.services[id];
+  const dir = mkdtempSync(join(tmpdir(), 'lawoss-list-tools-'));
+  const providerEnv = Object.fromEntries(Object.entries(env).filter(([, value]) => value !== undefined && value !== ''));
+  const runtimeEnv: Record<string, string | undefined> = {
+    ...allowlistedEnv(manifest, providerEnv)(id),
+    HOME: dir,
+    TMPDIR: dir,
+    PATH: env.PATH,
+    LAWOSS_CACHE_DIR: cacheDir,
+    LAWOSS_STATE_DIR: dir,
+    ...(service.stateEnv ? { [service.stateEnv]: dir } : {}),
+  };
+  // As in the pool: the SDK's default inherited variables are dropped unless listed above.
+  for (const name of DEFAULT_INHERITED_ENV_VARS) if (!(name in runtimeEnv)) runtimeEnv[name] = undefined;
+  const client = new Client({ name: 'lawoss-hub-list-tools', version: '0.1.0' });
+  try {
+    await client.connect(new StdioClientTransport({
+      command: process.execPath,
+      args: [join(runtimesDir, service.plugin, 'scripts', 'run.mjs'), ...(service.server ? ['--server', service.server] : []), 'mcp'],
+      cwd: dir,
+      env: runtimeEnv as Record<string, string>,
+      stderr: 'ignore',
+    }));
+    const names: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await client.listTools(cursor === undefined ? {} : { cursor });
+      names.push(...page.tools.map(tool => tool.name));
+      cursor = page.nextCursor;
+    } while (cursor !== undefined);
+    return names.sort();
+  } finally {
+    await client.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 const invokedDirectly = (): boolean => {
   if (!process.argv[1]) return false;
   try { return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href; } catch { return false; }
 };
 
-if (invokedDirectly()) {
+if (invokedDirectly() && process.argv[2] === '--list-tools') {
+  const id = process.argv[3] ?? '';
+  listRuntimeTools(id).then(tools => {
+    process.stdout.write(`${JSON.stringify({ service: id, tools })}\n`);
+  }, (error: unknown) => {
+    // Names the failing check only; runtime output is never passed on.
+    process.stderr.write(`hub --list-tools: ${error instanceof Error ? error.message : 'failed'}\n`);
+    process.exitCode = error instanceof UsageError ? 2 : 1;
+  });
+} else if (invokedDirectly()) {
   main().catch((error: unknown) => {
     // Config errors carry no values; other start-up errors name files or variables only.
     process.stderr.write(`hub: ${error instanceof Error ? error.message : 'start-up failed'}\n`);

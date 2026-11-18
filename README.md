@@ -3,8 +3,8 @@
 Self-hosted LAWOSS MCP servers with a branded login, deployable by an AI agent.
 
 > Status: early. This repository contains the authorization server (`auth/`), the MCP hub
-> (`hub/`) and the Compose deployment (`deploy/`). The setup CLI follows in a later release. No
-> container images are published yet.
+> (`hub/`), the Compose deployment (`deploy/`) and the setup CLI (`cli/`). No container images
+> are published yet.
 
 ## Contents
 
@@ -56,6 +56,24 @@ Check it with:
 python3 -m unittest -v deploy/test/compose.test.py
 docker compose -f deploy/compose.yaml --env-file deploy/.env.example config -q
 ```
+
+## Setup CLI
+
+`cli/lawoss-selfhost.mjs` (Node standard library only) is installed to `/opt/lawoss/bin` next to
+`compose.yaml`, `Caddyfile.template` and `services.json` in `/opt/lawoss`, and run with `sudo`.
+It generates every secret on the server into `/opt/lawoss/.env` (0600, root) and never prints a
+secret, key, activation link or password: its outputs are host names, `PASS`/`FAIL` lines and
+paths of 0600 files. Account, backup and snapshot work runs in one-off containers; no container
+gets the Docker socket.
+
+```sh
+lawoss-selfhost init --base example.com --services crz,orsr --record releases/VERSION.json --record-sha256 HEX
+lawoss-selfhost invite alice crz,orsr      # prints /opt/lawoss/handoff/alice.link
+lawoss-selfhost doctor
+lawoss-selfhost update --to VERSION --record releases/VERSION.json --record-sha256 HEX
+```
+
+`lawoss-selfhost` without arguments lists every command. Tests: `cd cli && npm test`.
 
 ## License
 
