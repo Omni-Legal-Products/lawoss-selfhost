@@ -17,7 +17,9 @@ import {
   Failure, UsageError, VERSION, deployment, options, paths, printable, readEnvFile, readRecord, requireImage, setEnvVars,
   verifyAttestations, verifyHostFiles, writeCaddyfile, writePrivateFile,
 } from '../lib.mjs';
-import { copyHostFiles, installFile, installRelease, keepRelease, keptRelease, startAndCheck, startStack, takeSnapshot } from '../host.mjs';
+import {
+  copyHostFiles, installFile, installRelease, keepRelease, keptRelease, startAndCheck, startContainers, startStack, takeSnapshot,
+} from '../host.mjs';
 
 const IMAGE_VARS = { auth: 'LAWOSS_AUTH_IMAGE', hub: 'LAWOSS_HUB_IMAGE', proxy: 'LAWOSS_PROXY_IMAGE' };
 
@@ -42,8 +44,9 @@ async function switchRelease(ctx, target, { revert, install }) {
   const current = deployment(ctx.root);
   const outgoing = keptRelease(ctx.root, current.release);
   let snapshot;
+  let stopped;
   try {
-    snapshot = await takeSnapshot(ctx, { release: current.release, image: requireImage(current.images.auth, 'current auth') });
+    ({ dir: snapshot, stopped } = await takeSnapshot(ctx, { release: current.release, image: requireImage(current.images.auth, 'current auth') }));
   } catch (error) {
     if (revert) putBack(ctx, current.release);
     throw error;
@@ -80,17 +83,30 @@ async function switchRelease(ctx, target, { revert, install }) {
     return 1;
   }
   // An update that failed, or a rollback that failed before the start: back to the state before.
+  // Whatever happens while restoring, the stack is started again and the snapshot is named.
   const host = join(snapshot, 'host');
-  writePrivateFile(ctx, p.env, before);
-  if (previousBefore === undefined) rmSync(p.envPrevious, { force: true });
-  else writePrivateFile(ctx, p.envPrevious, previousBefore);
-  copyHostFiles(ctx, host, ctx.root, outgoing, `the snapshot's host files of ${current.release}`);
-  if (existsSync(join(host, 'Caddyfile'))) installFile(ctx, p.caddyfile, readFileSync(join(host, 'Caddyfile')));
-  const restarted = await startStack(ctx).then(result => result.code === 0, () => false);
+  let restoreError;
+  let restarted = false;
+  try {
+    writePrivateFile(ctx, p.env, before);
+    if (previousBefore === undefined) rmSync(p.envPrevious, { force: true });
+    else writePrivateFile(ctx, p.envPrevious, previousBefore);
+    copyHostFiles(ctx, host, ctx.root, outgoing, `the snapshot's host files of ${current.release}`);
+    if (existsSync(join(host, 'Caddyfile'))) installFile(ctx, p.caddyfile, readFileSync(join(host, 'Caddyfile')));
+  } catch (error) {
+    restoreError = error;
+  } finally {
+    // Before the start nothing was recreated: the containers stopped for the snapshot come back as
+    // they were. After it, the stack is recreated from the restored files.
+    restarted = started
+      ? await startStack(ctx).then(result => result.code === 0, () => false)
+      : await startContainers(ctx, stopped).then(() => true, () => false);
+  }
   if (!revert) ctx.out(`FAIL rollback ${target.version}`);
   ctx.err(`lawoss-selfhost: ${failed} failed ${revert ? 'after the switch; rolled back' : 'before the start; went back'} to ${current.release}` +
-    (restarted ? '' : ', but the stack did not start again; run docker compose up -d and doctor') +
-    `; if ${current.release} does not work on the data now in the volumes, run restore-snapshot ${snapshot}`);
+    (restoreError ? `, but restoring the files of ${current.release} failed${restoreError instanceof Failure ? ` (${restoreError.message})` : ` (${restoreError?.code ?? 'error'})`}` : '') +
+    (restarted ? '' : ', and the stack did not start again; run docker compose up -d and doctor') +
+    `; to return to the state before exactly, run restore-snapshot ${snapshot}`);
   return 1;
 }
 

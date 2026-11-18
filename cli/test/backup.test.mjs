@@ -4,9 +4,9 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { keptRecord, verifyHostFiles } from '../lib.mjs';
+import { keptRecord, readEnvFile, verifyHostFiles } from '../lib.mjs';
 import { seal, unseal } from '../commands/backup.mjs';
-import { RUNNING_ID, SECRETISH, SENTINEL, hostBytes, initialized, setup } from './helpers.mjs';
+import { RUNNING_ID, SECRETISH, SENTINEL, hostBytes, initialized, setup, sha256 } from './helpers.mjs';
 
 // Answers the backup containers: the auth snapshot and the hub-data archive land in the mounted directory.
 function backupWrites(argv) {
@@ -165,7 +165,8 @@ describe('restore --apply', () => {
     after(() => rmSync(away, { recursive: true, force: true }));
     const key = join(away, 'backup-private.pem');
     renameSync(join(t.root, 'keys', 'backup-private.pem'), key);
-    return { t, dir, key };
+    // The value the catalog pins for the backup's release record.
+    return { t, dir, key, pin: t.recordSha };
   }
   const read = path => readFileSync(path, 'utf8');
 
@@ -180,7 +181,7 @@ describe('restore --apply', () => {
   });
 
   it('restores a backup onto a fresh server: host files, brand, releases, .env, both volumes, then doctor', async () => {
-    const { t: source, dir, key } = await backedUp();
+    const { t: source, dir, key, pin } = await backedUp();
     const t = setup();
     // The fresh server has only the CLI and whatever release files were installed; restore puts the backup's in place.
     writeFileSync(join(t.root, 'compose.yaml'), '# another release\n');
@@ -195,7 +196,7 @@ describe('restore --apply', () => {
       if (argv.includes('--check-introspection')) restoredEnv = read(join(t.root, '.env'));
       return undefined;
     };
-    assert.equal(await t.cli('restore', '--apply', '--private-key', key, dir), 0, t.err.join('\n'));
+    assert.equal(await t.cli('restore', '--apply', '--record-sha256', pin, '--private-key', key, dir), 0, t.err.join('\n'));
     assert.deepEqual(readFileSync(join(t.root, '.env')), readFileSync(join(source.root, '.env')));
     assert.equal(statSync(join(t.root, '.env')).mode & 0o777, 0o600);
     assert.deepEqual(readFileSync(join(t.root, 'Caddyfile')), readFileSync(join(source.root, 'Caddyfile')));
@@ -230,7 +231,7 @@ describe('restore --apply', () => {
   });
 
   it('refuses an envelope that names a path outside brand/ and releases/, before anything changes', async () => {
-    const { t, dir, key } = await backedUp();
+    const { t, dir, key, pin } = await backedUp();
     const content = unseal(JSON.parse(read(join(dir, 'host.enc.json'))), readFileSync(key));
     const evil = Buffer.from('owned\n');
     content.files['host/../compose.yaml'] = evil.toString('base64');
@@ -238,19 +239,83 @@ describe('restore --apply', () => {
     // Anyone holding the public key can seal an envelope.
     writeFileSync(join(dir, 'host.enc.json'), JSON.stringify(seal(content, readFileSync(join(t.root, 'keys', 'backup-public.pem')))));
     const fresh = setup();
-    assert.equal(await fresh.cli('restore', '--apply', '--private-key', key, dir), 1);
+    assert.equal(await fresh.cli('restore', '--apply', '--record-sha256', pin, '--private-key', key, dir), 1);
     assert.match(fresh.err.join('\n'), /outside/);
     assert.equal(fresh.calls.length, 0);
     assert.equal(existsSync(join(fresh.root, '.env')), false);
   });
 
-  it('refuses a backup whose auth part does not pass auth\'s check, before stopping anything', async () => {
+  it('keeps a release record byte for byte, so its kept copy hashes to the pinned value', async () => {
+    const { t } = await backedUp();
+    assert.equal(sha256(readFileSync(join(t.root, 'releases', '0.0.0.json'))), t.recordSha);
+    assert.deepEqual(readFileSync(join(t.root, 'releases', '0.0.0.json')), readFileSync(t.record));
+  });
+
+  it('requires --record-sha256 with --apply', async () => {
     const { dir, key } = await backedUp();
+    const fresh = setup();
+    assert.equal(await fresh.cli('restore', '--apply', '--private-key', key, dir), 2);
+    assert.equal(await fresh.cli('restore', '--apply', '--record-sha256', 'nothex', '--private-key', key, dir), 2);
+    assert.equal(fresh.calls.length, 0);
+  });
+
+  // Anyone holding the public key can seal a host part: what it names must be pinned, not trusted.
+  async function resealed(change) {
+    const { t, dir, key, pin } = await backedUp();
+    const content = unseal(JSON.parse(read(join(dir, 'host.enc.json'))), readFileSync(key));
+    change(content);
+    for (const [name, data] of Object.entries(content.files)) content.manifest[name] = sha256(Buffer.from(data, 'base64'));
+    writeFileSync(join(dir, 'host.enc.json'), JSON.stringify(seal(content, readFileSync(join(t.root, 'keys', 'backup-public.pem')))));
+    const fresh = setup();
+    writeFileSync(join(fresh.root, '.env'), 'EXISTING=1\n', { mode: 0o600 });
+    return { fresh, dir, key, pin };
+  }
+  const untouched = fresh => {
+    assert.equal(fresh.calls.filter(argv => argv[1] === 'stop' || argv[1] === 'run' || argv[1] === 'volume').length, 0, 'nothing stopped or run');
+    assert.equal(read(join(fresh.root, '.env')), 'EXISTING=1\n');
+    assert.equal(existsSync(join(fresh.root, 'releases')), false);
+  };
+  const b64 = text => Buffer.from(text).toString('base64');
+  const text = (content, name) => Buffer.from(content.files[name], 'base64').toString('utf8');
+
+  it('refuses a backup whose release record does not hash to the pinned value, with the stack untouched', async () => {
+    const { fresh, dir, key, pin } = await resealed(content => {
+      // A record with other images and its host files, consistent in itself but not the pinned one.
+      const record = JSON.parse(text(content, 'host/releases/0.0.0.json'));
+      record.images.auth = `evil/auth@sha256:${'e'.repeat(64)}`;
+      content.files['host/releases/0.0.0.json'] = b64(`${JSON.stringify(record, null, 2)}\n`);
+      content.files['.env'] = b64(text(content, '.env').replace(/^LAWOSS_AUTH_IMAGE=.*$/m, `LAWOSS_AUTH_IMAGE=${record.images.auth}`));
+    });
+    assert.equal(await fresh.cli('restore', '--apply', '--record-sha256', pin, '--private-key', key, dir), 1);
+    assert.match(fresh.err.join('\n'), /does not match the pinned value/);
+    untouched(fresh);
+  });
+
+  it('refuses a backup whose .env names other images than its pinned record, with the stack untouched', async () => {
+    const { fresh, dir, key, pin } = await resealed(content => {
+      content.files['.env'] = b64(text(content, '.env').replace(/^LAWOSS_AUTH_IMAGE=.*$/m, `LAWOSS_AUTH_IMAGE=evil/auth@sha256:${'e'.repeat(64)}`));
+    });
+    assert.equal(await fresh.cli('restore', '--apply', '--record-sha256', pin, '--private-key', key, dir), 1);
+    assert.match(fresh.err.join('\n'), /auth image .* record/);
+    untouched(fresh);
+  });
+
+  it('refuses a backup whose images do not pass attestation, with the stack untouched', async () => {
+    const { fresh, dir, key, pin } = await resealed(() => {});
+    fresh.state.which = name => name === 'gh';
+    fresh.state.handler = argv => argv[0] === 'gh' ? { code: 1, stdout: '', stderr: '' } : undefined;
+    assert.equal(await fresh.cli('restore', '--apply', '--record-sha256', pin, '--private-key', key, dir), 1);
+    assert.match(fresh.err.join('\n'), /attestation/);
+    untouched(fresh);
+  });
+
+  it('refuses a backup whose auth part does not pass auth\'s check, before stopping anything', async () => {
+    const { dir, key, pin } = await backedUp();
     const fresh = setup();
     writeFileSync(join(fresh.root, '.env'), 'EXISTING=1\n', { mode: 0o600 });
     const before = hostBytes(fresh.root);
     fresh.state.handler = argv => argv.includes('/tmp/restore-check') ? { code: 1, stdout: '', stderr: '' } : undefined;
-    assert.equal(await fresh.cli('restore', '--apply', '--private-key', key, dir), 1);
+    assert.equal(await fresh.cli('restore', '--apply', '--record-sha256', pin, '--private-key', key, dir), 1);
     assert.match(fresh.err.join('\n'), /auth part .* did not pass/);
     assert.equal(fresh.calls.length, 1, 'only the check ran: no stop, no restore');
     assert.equal(read(join(fresh.root, '.env')), 'EXISTING=1\n');
@@ -259,14 +324,14 @@ describe('restore --apply', () => {
   });
 
   it('refuses a backup whose kept host files do not match its release record', async () => {
-    const { t, dir, key } = await backedUp();
+    const { t, dir, key, pin } = await backedUp();
     const content = unseal(JSON.parse(read(join(dir, 'host.enc.json'))), readFileSync(key));
     const changed = Buffer.from('# changed\n');
     content.files['host/releases/0.0.0/compose.yaml'] = changed.toString('base64');
     content.manifest['host/releases/0.0.0/compose.yaml'] = (await import('node:crypto')).createHash('sha256').update(changed).digest('hex');
     writeFileSync(join(dir, 'host.enc.json'), JSON.stringify(seal(content, readFileSync(join(t.root, 'keys', 'backup-public.pem')))));
     const fresh = setup();
-    assert.equal(await fresh.cli('restore', '--apply', '--private-key', key, dir), 1);
+    assert.equal(await fresh.cli('restore', '--apply', '--record-sha256', pin, '--private-key', key, dir), 1);
     assert.match(fresh.err.join('\n'), /compose\.yaml/);
     assert.equal(fresh.calls.length, 0);
   });

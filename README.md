@@ -95,7 +95,7 @@ lawoss-selfhost backup
 lawoss-selfhost update --to VERSION --record releases/VERSION.json --record-sha256 HEX
 lawoss-selfhost rollback
 lawoss-selfhost restore-snapshot /opt/lawoss/snapshots/TIME
-lawoss-selfhost restore --apply --private-key /path/backup-private.pem /opt/lawoss/backups/TIME
+lawoss-selfhost restore --apply --record-sha256 HEX --private-key /path/backup-private.pem /opt/lawoss/backups/TIME
 lawoss-selfhost rotate introspection       # or cookies, signing
 lawoss-selfhost services add judikaty      # or remove
 ```
@@ -126,7 +126,11 @@ Backups: `backup init-key` creates the backup key pair once and never replaces i
 `keys/backup-public.pem` only, so the private key can and should live off the server. A backup holds
 auth's database (sealed by auth's own script), `hub-data`, `.env`, the Caddyfile, `brand/` and
 `releases/`. `restore --dry-run` checks one; `restore --apply` puts one back, also on a fresh server
-(certificates are issued again).
+(certificates are issued again). A backup is sealed with the public key, which anyone may hold, so
+`--apply` trusts nothing in it for what it installs: `--record-sha256` is the catalog's pin of the
+backup's release record, the backup's `.env` must name that record's images, their attestations
+must verify (with `gh`), and only that release's host files are installed; the Caddyfile is
+rendered from its template. All of it is checked before anything is stopped or written.
 
 `rotate introspection` replaces every service secret in the hub and auth together; `rotate cookies`
 and `rotate signing` put a new key first and keep only the previous one (a signing key stays until

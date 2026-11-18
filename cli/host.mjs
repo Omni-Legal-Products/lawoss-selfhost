@@ -91,6 +91,9 @@ export async function runningContainers(ctx, service) {
   return result.stdout.split('\n').map(line => line.trim()).filter(line => /^[0-9a-f]{6,64}$/.test(line));
 }
 
+/** Starts containers stopped earlier (for example auth, stopped for a snapshot) exactly as they were. */
+export const startContainers = (ctx, ids) => docker(ctx, 'start', ids);
+
 async function docker(ctx, verb, ids) {
   if (!ids.length) return;
   const result = await ctx.run(['docker', verb, ...ids]);
@@ -131,6 +134,7 @@ export async function extractVolume(ctx, image, volume, archive) {
  * A snapshot in <root>/snapshots/<time>/ (0700): host/ holds .env, the rendered Caddyfile and the
  * host files of `release` (from its kept copy); <volume>.tar the volumes, archived with auth
  * stopped so that its database is consistent. If the archives fail, auth is started again.
+ * Returns the directory and the ids of the auth containers it stopped.
  */
 export async function takeSnapshot(ctx, { release, image }) {
   const p = paths(ctx.root);
@@ -167,7 +171,7 @@ export async function takeSnapshot(ctx, { release, image }) {
     await docker(ctx, 'start', auth).catch(() => ctx.err('lawoss-selfhost: auth did not start again; run docker compose up -d'));
     throw error;
   }
-  return dir;
+  return { dir, stopped: auth };
 }
 
 /** Bounded, so that a start that hangs still reaches the rollback branch. */

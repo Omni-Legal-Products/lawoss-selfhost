@@ -31,7 +31,7 @@ export const USAGE = `Usage: lawoss-selfhost COMMAND
   rotate introspection|cookies|signing
   services add ID | services remove ID
   doctor
-  backup init-key | backup | restore --dry-run [--private-key PATH] [BACKUP_DIR] | restore --apply [--private-key PATH] BACKUP_DIR
+  backup init-key | backup | restore --dry-run [--private-key PATH] [BACKUP_DIR] | restore --apply --record-sha256 HEX [--private-key PATH] BACKUP_DIR
   update --to VERSION --record PATH --record-sha256 HEX | rollback
   restore-snapshot SNAPSHOT_DIR
 Environment: LAWOSS_ROOT (default /opt/lawoss).`;

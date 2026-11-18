@@ -309,7 +309,9 @@ describe('update and rollback: a failure between the snapshot and the start', ()
     assert.deepEqual(readFileSync(join(t.root, 'Caddyfile')), caddyfile);
     assert.deepEqual(hostBytes(t.root), old);
     assert.equal(existsSync(join(t.root, '.env.previous')), false);
-    assert.equal(t.calls.filter(isUp).length, 1, 'the stack, with auth stopped for the snapshot, is started again');
+    // Nothing was recreated yet: the auth container stopped for the snapshot is started as it was.
+    assert.equal(t.calls.filter(isUp).length, 0);
+    assert.deepEqual(t.calls.at(-1), ['docker', 'start', RUNNING_ID]);
     assert.match(t.err.join('\n'), /the switch failed after the switch; rolled back to 0\.0\.0/);
   });
 
@@ -323,9 +325,28 @@ describe('update and rollback: a failure between the snapshot and the start', ()
     assert.equal(await t.cli('rollback'), 1);
     assert.deepEqual(readFileSync(join(t.root, '.env')), env);
     assert.deepEqual(hostBytes(t.root), current, '0.0.1\'s host files are back');
-    assert.equal(t.calls.filter(isUp).length, 1);
+    assert.equal(t.calls.filter(isUp).length, 0);
+    assert.deepEqual(t.calls.at(-1), ['docker', 'start', RUNNING_ID]);
     assert.ok(t.out.includes('FAIL rollback 0.0.0'));
     assert.match(t.err.join('\n'), /before the start; went back to 0\.0\.1/);
+  });
+});
+
+describe('update: a revert that itself fails', () => {
+  it('still starts the auth container stopped for the snapshot and names the snapshot', async () => {
+    const t = await initialized('crz');
+    const next = installNextRelease(t.root);
+    // After the volume snapshot every write fails: the switch and then the revert's own writes.
+    t.state.handler = argv => {
+      if (argv[1] === 'run' && argv.includes('tar') && argv.join(' ').includes('caddy-data')) t.state.failChown = path => !path.endsWith('.tar');
+      return undefined;
+    };
+    assert.equal(await t.cli('update', '--to', '0.0.1', '--record', next.path, '--record-sha256', next.sha), 1);
+    assert.deepEqual(t.calls.at(-1), ['docker', 'start', RUNNING_ID], 'auth is started again');
+    const snapshot = t.out.find(line => line.startsWith(join(t.root, 'snapshots')));
+    const message = t.err.join('\n');
+    assert.match(message, /restoring the files .* failed/);
+    assert.ok(message.includes(`restore-snapshot ${snapshot}`), message);
   });
 });
 

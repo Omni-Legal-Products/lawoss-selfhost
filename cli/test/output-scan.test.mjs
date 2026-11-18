@@ -91,7 +91,7 @@ async function sweep(mode) {
     ['services', 'add', 'judikaty'],
     ['services', 'remove', 'judikaty'],
     ['restore-snapshot', 'SNAPSHOT'],
-    ['restore', '--apply', '--private-key', join(away, 'backup-private.pem'), 'BACKUP'],
+    ['restore', '--apply', '--record-sha256', t.recordSha, '--private-key', join(away, 'backup-private.pem'), 'BACKUP'],
   ];
   let snapshot = join(t.root, 'snapshots', 'none');
   let backup = join(t.root, 'backups', 'none');

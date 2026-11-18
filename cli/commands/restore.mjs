@@ -1,22 +1,26 @@
 // restore --dry-run [--private-key PATH] [DIR]: decrypts and checks a backup (the auth part in a
 // throwaway container whose destination is a tmpfs) and writes nothing.
-// restore --apply [--private-key PATH] DIR: puts a backup back, also on a fresh server with no .env:
-// checks everything first (the host part decrypts, names only allowlisted paths, and carries the
-// record and kept host files of its release; the auth part passes auth's own check in a throwaway
-// container), then stops the stack, writes brand/, releases/, the
-// release's host files, .env and the Caddyfile, restores auth's database into auth-data with auth's
-// own restore script and hub-data from its archive (one-off containers, the backup's auth image),
-// starts the stack and runs doctor. caddy-data is not in a backup; certificates are issued again.
+// restore --apply --record-sha256 HEX [--private-key PATH] DIR: puts a backup back, also on a fresh
+// server with no .env. A host part can be sealed by anyone holding the public key, so nothing in it
+// is trusted for what it installs: its release record must hash to HEX (the value pinned in the
+// catalog for that release), its .env must name exactly that record's images, the images' build
+// attestations must verify (when gh is installed), and its kept host files must match the record.
+// The host part must also decrypt and name only allowlisted paths, and the auth part must pass
+// auth's own check in a throwaway container. Only then does it stop the stack, write brand/, the
+// pinned release's record and host files, .env and a Caddyfile rendered from the pinned template,
+// restore auth's database into auth-data with auth's own restore script and hub-data from its
+// archive (one-off containers, the pinned auth image), start the stack and run doctor. caddy-data is
+// not in a backup; certificates are issued again.
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import {
-  DNS_NAME, Failure, UsageError, VERSION, options, parseEnv, paths, randomKey, readEnvFile, requireImage, sha256, validateRecord,
-  writePrivateFile,
+  DNS_NAME, Failure, UsageError, VERSION, deployment, options, parseEnv, paths, randomKey, readEnvFile, requireImage, sha256,
+  validateRecord, verifyAttestations, writeCaddyfile, writePrivateFile,
 } from '../lib.mjs';
 import {
   WRITER, ensureVolume, extractVolume, installFile, installRelease, startAndCheck, stopStack,
 } from '../host.mjs';
-import { BACKUP_NAME, HOST_TREES, keyPaths, unseal } from './backup.mjs';
+import { BACKUP_NAME, keyPaths, unseal } from './backup.mjs';
 
 /**
  * Runs auth's restore into a tmpfs (it refuses an existing destination and checks the database),
@@ -43,15 +47,19 @@ const absolute = path => isAbsolute(path) && resolve(path) === path && !/[:,\n]/
 
 export async function restore(args, ctx) {
   const { values, positionals } = options(args, {
-    'dry-run': { type: 'boolean' }, apply: { type: 'boolean' }, 'private-key': { type: 'string' },
+    'dry-run': { type: 'boolean' }, apply: { type: 'boolean' }, 'private-key': { type: 'string' }, 'record-sha256': { type: 'string' },
   }, { positionals: [0, 1] });
   if (Boolean(values['dry-run']) === Boolean(values.apply)) throw new UsageError('restore takes --dry-run or --apply');
   if (values.apply && !positionals[0]) throw new UsageError('restore --apply needs the backup directory');
+  const pin = values['record-sha256'];
+  if (values.apply && !/^[0-9a-f]{64}$/.test(pin ?? ''))
+    throw new UsageError('restore --apply needs --record-sha256, the catalog\'s SHA-256 of the backup\'s release record');
+  if (!values.apply && pin !== undefined) throw new UsageError('--record-sha256 goes with --apply');
   if (positionals[0] && !absolute(positionals[0])) throw new UsageError('BACKUP_DIR must be an absolute path');
   const dir = positionals[0] ?? latestBackup(ctx.root);
   const privateKey = values['private-key'] ?? keyPaths(ctx.root).private;
   if (!absolute(privateKey)) throw new UsageError('--private-key must be an absolute path');
-  return values.apply ? apply(ctx, dir, privateKey) : dryRun(ctx, dir, privateKey);
+  return values.apply ? apply(ctx, dir, privateKey, pin) : dryRun(ctx, dir, privateKey);
 }
 
 /** auth's own restore into a throwaway tmpfs: decrypts and checks the auth part, writes nothing. */
@@ -94,18 +102,26 @@ function readBackup(dir, privateKey) {
   return new Map(names.map(name => [name, Buffer.from(content.files[name], 'base64')]));
 }
 
-/** The backup's release: its .env, image and record, and its kept host files complete and matching. */
-function backupRelease(files) {
+const IMAGE_VARS = { auth: 'LAWOSS_AUTH_IMAGE', hub: 'LAWOSS_HUB_IMAGE', proxy: 'LAWOSS_PROXY_IMAGE' };
+
+/**
+ * The backup's release, trusted only through the pinned record: the record must hash to `pin`, the
+ * .env must name its images, and the kept host files must match it.
+ */
+function backupRelease(files, pin) {
   const vars = parseEnv(files.get('.env').toString('utf8'));
   if (!DNS_NAME.test(vars.LAWOSS_BASE ?? '')) throw new Failure('the backup\'s .env has no valid LAWOSS_BASE');
   const version = vars.LAWOSS_RELEASE;
   if (!VERSION.test(version ?? '')) throw new Failure('the backup\'s .env has no valid LAWOSS_RELEASE');
-  const image = requireImage(vars.LAWOSS_AUTH_IMAGE, 'backup auth');
   const recordFile = files.get(`host/releases/${version}.json`);
   if (!recordFile) throw new Failure(`the backup holds no record of release ${version}`);
+  if (sha256(recordFile) !== pin) throw new Failure(`the backup's record of release ${version} does not match the pinned value; refusing it`);
   let record;
   try { record = JSON.parse(recordFile.toString('utf8')); } catch { throw new Failure(`the backup's record of release ${version} is not valid JSON`); }
   validateRecord(record, version);
+  for (const [name, key] of Object.entries(IMAGE_VARS))
+    if (vars[key] !== record.images[name]) throw new Failure(`the backup's ${name} image is not the one its pinned record names; refusing it`);
+  const image = requireImage(vars.LAWOSS_AUTH_IMAGE, 'backup auth');
   const prefix = `host/releases/${version}/`;
   const wrong = Object.entries(record.files).filter(([path, digest]) => {
     const data = files.get(`${prefix}${path}`);
@@ -114,11 +130,14 @@ function backupRelease(files) {
   for (const name of files.keys())
     if (name.startsWith(`${prefix}bin/`) && !Object.hasOwn(record.files, name.slice(prefix.length))) wrong.push(name.slice(prefix.length));
   if (wrong.length) throw new Failure(`the backup's host files of release ${version} differ from its record: ${wrong.sort().join(', ')}`);
-  return { version, image };
+  return { version, image, record };
 }
 
-/** Replaces <root>/<name> with the backup's tree: built next to it, then swapped in. Root-owned, 0755/0644. */
-function restoreTree(ctx, files, name) {
+/**
+ * Replaces <root>/<name> with the backup's tree under `prefix`: built next to it, then swapped in.
+ * Root-owned, 0755/0644. `keep` selects the entries (relative to the tree) that are written.
+ */
+function restoreTree(ctx, files, name, keep = () => true) {
   const target = join(ctx.root, name);
   const staging = join(ctx.root, `.${name}.${randomKey(9)}.tmp`);
   const old = join(ctx.root, `.${name}.${randomKey(9)}.old`);
@@ -127,7 +146,8 @@ function restoreTree(ctx, files, name) {
     chmodSync(staging, 0o755);
     ctx.chown(staging, 0, 0);
     const prefix = `host/${name}/`;
-    for (const [file, data] of files) if (file.startsWith(prefix)) installFile(ctx, join(staging, file.slice(prefix.length)), data);
+    for (const [file, data] of files)
+      if (file.startsWith(prefix) && keep(file.slice(prefix.length))) installFile(ctx, join(staging, file.slice(prefix.length)), data);
     if (existsSync(target)) renameSync(target, old);
     renameSync(staging, target);
   } finally {
@@ -136,19 +156,23 @@ function restoreTree(ctx, files, name) {
   }
 }
 
-async function apply(ctx, dir, privateKey) {
+async function apply(ctx, dir, privateKey, pin) {
   const p = paths(ctx.root);
   const files = readBackup(dir, privateKey);
-  const { version, image } = backupRelease(files);
-  // The auth part too, before the stack is stopped or any file is replaced.
+  const { version, image, record } = backupRelease(files, pin);
+  // Every check runs before the stack is stopped or any file is replaced.
+  await verifyAttestations(ctx, record.images);
   if (!await checkAuthPart(ctx, dir, privateKey, image))
     throw new Failure(`the auth part of ${dir} did not pass auth's own check; nothing was changed`);
 
   await stopStack(ctx);
-  for (const name of HOST_TREES) restoreTree(ctx, files, name);
+  // Of releases/, only the pinned release is restored: other kept releases are unverified here.
+  restoreTree(ctx, files, 'brand');
+  restoreTree(ctx, files, 'releases', path => path === `${version}.json` || path.startsWith(`${version}/`));
   installRelease(ctx, version);
   writePrivateFile(ctx, p.env, files.get('.env'));
-  installFile(ctx, p.caddyfile, files.get('Caddyfile'));
+  // Rendered from the pinned template, not taken from the backup.
+  writeCaddyfile(ctx, deployment(ctx.root));
 
   const authData = await ensureVolume(ctx, 'auth-data');
   const auth = await ctx.run(['docker', 'run', ...WRITER, '--tmpfs', '/tmp', '-v', `${authData}:/data`,
