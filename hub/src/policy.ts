@@ -17,9 +17,24 @@ function effective(policies: Readonly<Record<string, ToolPolicy>>, name: string)
   return { kind: 'deny' };
 }
 
-interface ListedTool {
+export interface ListedTool {
   name: string;
   inputSchema: { properties?: Record<string, unknown>; required?: string[]; [key: string]: unknown };
+}
+
+/** The arguments an `allow-without` policy removes; empty for any other policy. */
+export function withoutArgumentsOf(policies: Readonly<Record<string, ToolPolicy>>, name: string): readonly string[] {
+  const policy = effective(policies, name);
+  return policy.kind === 'allow' ? policy.without : [];
+}
+
+/**
+ * Fail closed on a manifest that does not match the runtime: every argument an `allow-without`
+ * policy names must be a property of the runtime's input schema, or the tool is not offered.
+ */
+export function schemaCovers(tool: ListedTool, names: readonly string[]): boolean {
+  const properties = tool.inputSchema.properties;
+  return names.every(name => properties !== null && typeof properties === 'object' && Object.hasOwn(properties, name));
 }
 
 function withoutArguments<T extends ListedTool>(tool: T, names: readonly string[]): T {
@@ -33,13 +48,14 @@ function withoutArguments<T extends ListedTool>(tool: T, names: readonly string[
 
 /**
  * The tools a remote client may see: denied and unreviewed tools are hidden; `allow-without`
- * tools lose those properties. Returns new objects and never mutates the runtime's list.
+ * tools lose those properties and are hidden when the runtime schema lacks one of them.
+ * Returns new objects and never mutates the runtime's list.
  */
 export function listedTools<T extends ListedTool>(policies: Readonly<Record<string, ToolPolicy>>, tools: readonly T[]): T[] {
   const result: T[] = [];
   for (const tool of tools) {
     const policy = effective(policies, tool.name);
-    if (policy.kind === 'allow') result.push(withoutArguments(tool, policy.without));
+    if (policy.kind === 'allow' && schemaCovers(tool, policy.without)) result.push(withoutArguments(tool, policy.without));
   }
   return result;
 }

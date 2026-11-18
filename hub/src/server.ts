@@ -3,14 +3,17 @@ import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import type { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import {
   CallToolRequestSchema,
   CallToolResultSchema,
+  ErrorCode,
   ListToolsRequestSchema,
   ListToolsResultSchema,
+  McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { Manifest, ServiceId, ToolPolicy } from './manifest.js';
-import { checkCall, listedTools } from './policy.js';
+import { DENY_TEXT, checkCall, listedTools, schemaCovers, withoutArgumentsOf } from './policy.js';
 import { createSharedAuth, loadSharedAuthConfig, principalKey, runWithIdentity } from './resource-auth.js';
 import type { VerifiedIdentity } from './resource-auth.js';
 import { resourceUrl, routeHost } from './routing.js';
@@ -62,15 +65,57 @@ function createServices(opts: HubOptions): Map<ServiceId, Service> {
   return services;
 }
 
+// Client-facing texts for failures. Internal error text (paths, principals, runtime messages)
+// never crosses the hub, which is the trust boundary.
+export const INTERNAL_ERROR_TEXT = 'Služba je dočasne nedostupná. Skúste to znova neskôr.';
+export const TIMEOUT_TEXT = 'Služba neodpovedala včas. Skúste to znova.';
+export const INVALID_PARAMS_TEXT = 'Neplatné argumenty nástroja.';
+// Bounds the runtime tools/list pages read to check one allow-without schema.
+const MAX_LIST_PAGES = 20;
+
+/**
+ * A JSON-RPC error whose message is sent as is. (McpError would prefix "MCP error <code>: ";
+ * the SDK serializes any thrown error as { code, message }.)
+ */
+class PublicError extends Error {
+  constructor(readonly code: number, message: string) {
+    super(message);
+  }
+}
+
+function publicError(error: unknown): PublicError {
+  const code = error instanceof McpError ? error.code : undefined;
+  if (code === ErrorCode.RequestTimeout) return new PublicError(ErrorCode.RequestTimeout, TIMEOUT_TEXT);
+  if (code === ErrorCode.InvalidParams) return new PublicError(ErrorCode.InvalidParams, INVALID_PARAMS_TEXT);
+  return new PublicError(ErrorCode.InternalError, INTERNAL_ERROR_TEXT);
+}
+
+/** Reads the runtime's own listing of one tool, so an allow-without policy is checked against its real schema. */
+async function runtimeTool(client: Client, name: string, signal: AbortSignal) {
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_LIST_PAGES; page++) {
+    const result = await client.request({ method: 'tools/list', params: cursor === undefined ? {} : { cursor } },
+      ListToolsResultSchema, { signal });
+    const tool = result.tools.find(entry => entry.name === name);
+    if (tool || result.nextCursor === undefined) return tool;
+    cursor = result.nextCursor;
+  }
+  return undefined;
+}
+
 /** One MCP server per request, proxying tools/list and tools/call to the principal's runtime under the policy. */
 function createMcpServer(service: Service, principal: string, pool: RuntimePool, log: (line: string) => void): Server {
   const server = new Server({ name: `lawoss-${service.id}`, version: '0.1.0' }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async (request, extra) => {
-    const client = await pool.client(principal, service.id);
-    const cursor = request.params?.cursor;
-    const result = await client.request({ method: 'tools/list', params: cursor === undefined ? {} : { cursor } },
-      ListToolsResultSchema, { signal: extra.signal });
-    return { ...result, tools: listedTools(service.tools, result.tools) };
+    try {
+      const client = await pool.client(principal, service.id);
+      const cursor = request.params?.cursor;
+      const result = await client.request({ method: 'tools/list', params: cursor === undefined ? {} : { cursor } },
+        ListToolsResultSchema, { signal: extra.signal });
+      return { ...result, tools: listedTools(service.tools, result.tools) };
+    } catch (error) {
+      throw publicError(error);
+    }
   });
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const started = performance.now();
@@ -83,13 +128,20 @@ function createMcpServer(service: Service, principal: string, pool: RuntimePool,
       status,
       principal: principalHash(principal),
     }));
-    const decision = checkCall(service.tools, name, args);
-    if (!decision.allowed) {
+    const refuse = (text: string) => {
       write('denied');
-      return { content: [{ type: 'text', text: decision.text }], isError: true };
-    }
+      return { content: [{ type: 'text' as const, text }], isError: true };
+    };
+    const decision = checkCall(service.tools, name, args);
+    if (!decision.allowed) return refuse(decision.text);
     try {
       const client = await pool.client(principal, service.id);
+      const without = withoutArgumentsOf(service.tools, name);
+      if (without.length > 0) {
+        // Fail closed when the manifest names an argument the runtime schema does not have.
+        const tool = await runtimeTool(client, name, extra.signal);
+        if (!tool || !schemaCovers(tool, without)) return refuse(DENY_TEXT);
+      }
       // Only name and arguments are forwarded; client _meta (for example progress tokens) stays here.
       const result = await client.request({ method: 'tools/call', params: { name, arguments: args } },
         CallToolResultSchema, { signal: extra.signal });
@@ -97,7 +149,7 @@ function createMcpServer(service: Service, principal: string, pool: RuntimePool,
       return result;
     } catch (error) {
       write('failed');
-      throw error;
+      throw publicError(error);
     }
   });
   return server;

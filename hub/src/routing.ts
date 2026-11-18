@@ -4,16 +4,15 @@ import type { ServiceId } from './manifest.js';
 export const resourceUrl = (id: ServiceId, base: string): string => `https://${id}.${base}/mcp`;
 
 /**
- * Selects the enabled service named by a Host header: exactly `<id>.<base>`, compared
- * case-insensitively. A port is accepted only where the resource URL itself has one, which is
- * the adapter's Host rule; anything else selects nothing.
+ * Selects the enabled service named by a Host header: exactly the host of `resourceUrl(id, base)`,
+ * compared byte for byte like the adapter's Host check (so no case folding, and a port only where
+ * the resource URL has one). Anything else selects nothing.
  */
 export function routeHost(host: string | undefined, base: string, ids: ReadonlySet<ServiceId>): ServiceId | undefined {
   if (!host) return undefined;
-  const lower = host.toLowerCase();
-  const suffix = `.${base.toLowerCase()}`;
-  if (!lower.endsWith(suffix)) return undefined;
-  const id = lower.slice(0, -suffix.length);
+  const suffix = `.${base}`;
+  if (!host.endsWith(suffix)) return undefined;
+  const id = host.slice(0, -suffix.length);
   if (!ids.has(id)) return undefined;
   let expected: string;
   try {
@@ -21,5 +20,5 @@ export function routeHost(host: string | undefined, base: string, ids: ReadonlyS
   } catch {
     return undefined;
   }
-  return expected === lower ? id : undefined;
+  return expected === host ? id : undefined;
 }

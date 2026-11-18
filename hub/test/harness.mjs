@@ -62,8 +62,11 @@ export async function startIntrospection() {
   return { issuer, issue, close: () => new Promise(resolve => server.close(resolve)) };
 }
 
-/** Fake pool: one in-memory MCP runtime per (principal, service); records every client() and runtime call. */
-export function fakePool() {
+/**
+ * Fake pool: one in-memory MCP runtime per (principal, service); records every client() and runtime
+ * tools/call. `onCall` may throw to simulate a runtime-originated JSON-RPC error.
+ */
+export function fakePool({ onCall } = {}) {
   const clientCalls = [];
   const runtimeCalls = [];
   const clients = new Map();
@@ -78,6 +81,7 @@ export function fakePool() {
         runtime.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: RUNTIME_TOOLS }));
         runtime.setRequestHandler(CallToolRequestSchema, async request => {
           runtimeCalls.push({ principal, id, name: request.params.name, arguments: request.params.arguments });
+          onCall?.(request.params);
           return { content: [{ type: 'text', text: `runtime:${request.params.name}` }] };
         });
         const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -95,8 +99,8 @@ export function fakePool() {
   };
 }
 
-export async function startHub({ issuer, pool, log }) {
-  const app = createHub({ base: BASE, issuer, manifest, secrets, pool, allowHttpForTests: true, log });
+export async function startHub({ issuer, pool, log, manifest: override = manifest }) {
+  const app = createHub({ base: BASE, issuer, manifest: override, secrets, pool, allowHttpForTests: true, log });
   const server = app.listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
   return { port: server.address().port, close: () => new Promise(resolve => server.close(resolve)) };

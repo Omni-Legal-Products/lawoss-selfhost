@@ -21,10 +21,10 @@ describe('resource adapter copy', () => {
 
 describe('host routing (pure)', () => {
   const ids = new Set(['orsr', 'crz']);
-  it('maps <id>.<base> case-insensitively and nothing else', () => {
+  it('maps exactly <id>.<base> and nothing else', () => {
     assert.equal(routeHost('orsr.example.test', BASE, ids), 'orsr');
-    assert.equal(routeHost('CRZ.Example.Test', BASE, ids), 'crz');
-    for (const host of [undefined, '', 'example.test', 'rpo.example.test', 'orsr.example.test:8443',
+    assert.equal(routeHost('crz.example.test', BASE, ids), 'crz');
+    for (const host of [undefined, '', 'example.test', 'CRZ.example.test', 'crz.Example.Test', 'rpo.example.test', 'orsr.example.test:8443',
       'orsr.example.test.evil.test', 'x.orsr.example.test', 'constructor.example.test', '__proto__.example.test',
       'orsr.example.test.', 'orsr.example.com'])
       assert.equal(routeHost(host, BASE, ids), undefined, String(host));
@@ -47,7 +47,7 @@ describe('hub routing and authentication', () => {
   it('unknown host returns 404', async () => {
     // rpo is in the manifest but has no secret, so it is not enabled.
     for (const host of ['nope.example.test', BASE, 'rpo.example.test', 'orsr.example.test:8443',
-      'orsr.example.test.evil.test', 'constructor.example.test', '127.0.0.1']) {
+      'orsr.example.test.evil.test', 'constructor.example.test', '127.0.0.1', `ORSR.${BASE}`, 'orsr.EXAMPLE.test']) {
       for (const path of ['/mcp', '/.well-known/oauth-protected-resource/mcp'])
         assert.equal((await send(hub.port, { host, path })).status, 404, `${host}${path}`);
     }
@@ -87,12 +87,10 @@ describe('hub routing and authentication', () => {
     assert.deepEqual(pool.clientCalls.map(call => call.id), ['orsr']);
   });
 
-  it('a foreign Origin or a mixed-case Host fails the adapter request check with 403', async () => {
+  it('a foreign Origin fails the adapter request check with 403', async () => {
     introspection.issue('origin-token', 'orsr');
     const foreign = await rpc(hub.port, 'orsr', 'origin-token', 'tools/list', {}, { origin: 'https://evil.example.com' });
     assert.equal(foreign.status, 403);
-    const mixed = await send(hub.port, { host: `ORSR.${BASE}`, path: '/.well-known/oauth-protected-resource/mcp' });
-    assert.equal(mixed.status, 403);
   });
 
   it('the runtime is selected by the verified principal, never by client headers', async () => {
