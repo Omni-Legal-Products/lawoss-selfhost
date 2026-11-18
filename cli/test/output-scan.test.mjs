@@ -1,4 +1,5 @@
-// Review focus: no command prints a secret. Every command runs against one deployment whose
+// Review focus: no command prints a secret. Every command (but brand preview, whose terminal is the
+// container's own by design) runs against one deployment whose
 // containers and probes all echo every secret they could know (the .env values, a provider key,
 // the backup private key), on stdout and stderr; nothing of it may reach the CLI's own output.
 import assert from 'node:assert/strict';
@@ -59,6 +60,10 @@ async function sweep(mode) {
     const backupDir = argv.find(arg => arg.endsWith(':/backup'))?.split(':')[0];
     if (backupDir && argv.includes('snapshot')) writeFileSync(join(backupDir, 'auth.enc.json'), '{}\n');
     if (backupDir && argv.includes('tar')) writeFileSync(join(backupDir, 'hub-data.tar'), 'archive\n');
+    // list's own answer, with fields it must never print.
+    if (argv.at(-1) === 'list' && argv.includes('dist/admin.js'))
+      return { code: mode === 'failing' ? 1 : 0, stderr: '', stdout: JSON.stringify([{ username: 'alice', status: 'active',
+        resources: { 'https://crz.example.com/mcp': 'alice' }, passwordHash: SENTINEL, link: `https://auth.example.com/a#${SENTINEL}` }]) };
     const handoff = argv.find(arg => arg.endsWith(':/handoff'))?.split(':')[0];
     if (handoff) writeFileSync(join(handoff, 'link'), `https://auth.example.com/activate#${SENTINEL}\n`);
     return mode === 'failing' && !argv.includes('tar') && !argv.includes('snapshot') ? { code: 1, stdout: '', stderr: '' } : undefined;
@@ -114,8 +119,7 @@ describe('no command prints a secret', () => {
     const codes = await sweep('noisy');
     // The sweep is only meaningful when the commands really ran through.
     const failed = Object.entries(codes).filter(([, code]) => code !== 0).map(([step]) => step);
-    // list parses its container's output, which here is only the noise.
-    assert.deepEqual(failed, ['list'], JSON.stringify(codes));
+    assert.deepEqual(failed, [], JSON.stringify(codes));
   });
 
   it('every command, with containers and probes that fail and print every secret', async () => {

@@ -287,6 +287,48 @@ describe('update and rollback: host files', () => {
   });
 });
 
+describe('update and rollback: a failure between the snapshot and the start', () => {
+  // The first write after the volume snapshot fails (the archives' own chown is left alone).
+  const failAfterSnapshot = t => argv => {
+    if (argv[1] === 'run' && argv.includes('tar') && argv.join(' ').includes('caddy-data')) {
+      let once = true;
+      t.state.failChown = path => !path.endsWith('.tar') && once && !(once = false);
+    }
+    return undefined;
+  };
+
+  it('a failed write after the snapshot takes the way back: files and .env restored, the stack started', async () => {
+    const t = await initialized('crz');
+    const env = readFileSync(join(t.root, '.env'));
+    const caddyfile = readFileSync(join(t.root, 'Caddyfile'));
+    const old = hostBytes(t.root);
+    const next = installNextRelease(t.root);
+    t.state.handler = failAfterSnapshot(t);
+    assert.equal(await t.cli('update', '--to', '0.0.1', '--record', next.path, '--record-sha256', next.sha), 1);
+    assert.deepEqual(readFileSync(join(t.root, '.env')), env);
+    assert.deepEqual(readFileSync(join(t.root, 'Caddyfile')), caddyfile);
+    assert.deepEqual(hostBytes(t.root), old);
+    assert.equal(existsSync(join(t.root, '.env.previous')), false);
+    assert.equal(t.calls.filter(isUp).length, 1, 'the stack, with auth stopped for the snapshot, is started again');
+    assert.match(t.err.join('\n'), /the switch failed after the switch; rolled back to 0\.0\.0/);
+  });
+
+  it('a rollback that fails before the start goes back to the current release and starts it', async () => {
+    const t = await initialized('crz');
+    const next = installNextRelease(t.root);
+    assert.equal(await t.cli('update', '--to', '0.0.1', '--record', next.path, '--record-sha256', next.sha), 0);
+    const env = readFileSync(join(t.root, '.env'));
+    const current = hostBytes(t.root);
+    t.state.handler = failAfterSnapshot(t);
+    assert.equal(await t.cli('rollback'), 1);
+    assert.deepEqual(readFileSync(join(t.root, '.env')), env);
+    assert.deepEqual(hostBytes(t.root), current, '0.0.1\'s host files are back');
+    assert.equal(t.calls.filter(isUp).length, 1);
+    assert.ok(t.out.includes('FAIL rollback 0.0.0'));
+    assert.match(t.err.join('\n'), /before the start; went back to 0\.0\.1/);
+  });
+});
+
 describe('restore-snapshot', () => {
   it('stops the stack, restores every volume, the host files and .env from the snapshot, starts and checks', async () => {
     const t = await initialized('crz');

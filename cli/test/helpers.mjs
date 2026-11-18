@@ -147,7 +147,11 @@ export function setup({ handler, probes, base = 'example.com' } = {}) {
   const ctx = {
     root,
     run,
-    chown(path, uid, gid) { chowns.push([path, uid, gid]); },
+    // `state.failChown(path)`: true makes this chown fail (an injected write error).
+    chown(path, uid, gid) {
+      if (state.failChown?.(path)) throw Object.assign(new Error('injected'), { code: 'EIO' });
+      chowns.push([path, uid, gid]);
+    },
     // Whether a command is on PATH; gh is absent unless a test says otherwise.
     which: name => (state.which ?? (() => false))(name),
     out: line => out.push(line),

@@ -52,29 +52,34 @@ async function switchRelease(ctx, target, { revert, install }) {
 
   const before = readFileSync(p.env);
   const previousBefore = existsSync(p.envPrevious) ? readFileSync(p.envPrevious) : undefined;
-  if (install) installRelease(ctx, target.version);
-  writePrivateFile(ctx, p.envPrevious, before);
-  writePrivateFile(ctx, p.env, setEnvVars(before.toString('utf8'), {
-    LAWOSS_RELEASE: target.version,
-    ...Object.fromEntries(Object.entries(IMAGE_VARS).map(([name, key]) => [key, target.images[name]])),
-  }));
+  // Everything after the snapshot may fail (a disk filled by the archives, a file that cannot be
+  // written): it all takes the way back below, so auth, stopped for the snapshot, never stays down.
   let failed;
+  let started = false;
   try {
+    if (install) installRelease(ctx, target.version);
+    writePrivateFile(ctx, p.envPrevious, before);
+    writePrivateFile(ctx, p.env, setEnvVars(before.toString('utf8'), {
+      LAWOSS_RELEASE: target.version,
+      ...Object.fromEntries(Object.entries(IMAGE_VARS).map(([name, key]) => [key, target.images[name]])),
+    }));
     writeCaddyfile(ctx, deployment(ctx.root));
+    started = true;
     failed = await startAndCheck(ctx);
   } catch {
-    failed = 'render';
+    failed = 'the switch';
   }
   if (failed === undefined) {
     ctx.out(`switched to ${target.version}`);
     return 0;
   }
-  if (!revert) {
+  if (!revert && started) {
     ctx.out(`FAIL rollback ${target.version}`);
     ctx.err(`lawoss-selfhost: ${failed} failed after rolling back; .env names ${target.version}; fix the cause and run doctor, ` +
       `or return to the state before with restore-snapshot ${snapshot}`);
     return 1;
   }
+  // An update that failed, or a rollback that failed before the start: back to the state before.
   const host = join(snapshot, 'host');
   writePrivateFile(ctx, p.env, before);
   if (previousBefore === undefined) rmSync(p.envPrevious, { force: true });
@@ -82,9 +87,10 @@ async function switchRelease(ctx, target, { revert, install }) {
   copyHostFiles(ctx, host, ctx.root, outgoing, `the snapshot's host files of ${current.release}`);
   if (existsSync(join(host, 'Caddyfile'))) installFile(ctx, p.caddyfile, readFileSync(join(host, 'Caddyfile')));
   const restarted = await startStack(ctx).then(result => result.code === 0, () => false);
-  ctx.err(`lawoss-selfhost: ${failed} failed after the switch; rolled back to ${current.release}` +
+  if (!revert) ctx.out(`FAIL rollback ${target.version}`);
+  ctx.err(`lawoss-selfhost: ${failed} failed ${revert ? 'after the switch; rolled back' : 'before the start; went back'} to ${current.release}` +
     (restarted ? '' : ', but the stack did not start again; run docker compose up -d and doctor') +
-    `; if ${current.release} does not work on the data the new release left, run restore-snapshot ${snapshot}`);
+    `; if ${current.release} does not work on the data now in the volumes, run restore-snapshot ${snapshot}`);
   return 1;
 }
 

@@ -2,7 +2,8 @@
 // throwaway container whose destination is a tmpfs) and writes nothing.
 // restore --apply [--private-key PATH] DIR: puts a backup back, also on a fresh server with no .env:
 // checks everything first (the host part decrypts, names only allowlisted paths, and carries the
-// record and kept host files of its release), then stops the stack, writes brand/, releases/, the
+// record and kept host files of its release; the auth part passes auth's own check in a throwaway
+// container), then stops the stack, writes brand/, releases/, the
 // release's host files, .env and the Caddyfile, restores auth's database into auth-data with auth's
 // own restore script and hub-data from its archive (one-off containers, the backup's auth image),
 // starts the stack and runs doctor. caddy-data is not in a backup; certificates are issued again.
@@ -53,18 +54,23 @@ export async function restore(args, ctx) {
   return values.apply ? apply(ctx, dir, privateKey) : dryRun(ctx, dir, privateKey);
 }
 
+/** auth's own restore into a throwaway tmpfs: decrypts and checks the auth part, writes nothing. */
+async function checkAuthPart(ctx, dir, privateKey, image) {
+  const result = await ctx.run(['docker', 'run', '--rm', '--read-only', '--network', 'none', '--user', '0:0', '--cap-drop', 'ALL',
+    '--security-opt', 'no-new-privileges:true', '--tmpfs', '/tmp',
+    '-v', `${join(dir, 'auth.enc.json')}:/backup/auth.enc.json:ro`, '-v', `${privateKey}:/keys/private.pem:ro`,
+    '--entrypoint', 'node', image, 'scripts/backup.mjs', 'restore',
+    '--input', '/backup/auth.enc.json', '--private-key', '/keys/private.pem', '--destination', '/tmp/restore-check']);
+  return result.code === 0;
+}
+
 async function dryRun(ctx, dir, privateKey) {
   const p = paths(ctx.root);
   const image = requireImage(existsSync(p.env) ? readEnvFile(p.env).LAWOSS_AUTH_IMAGE : undefined, 'auth');
   let ok = false;
   try {
     unseal(JSON.parse(readFileSync(join(dir, 'host.enc.json'), 'utf8')), readFileSync(privateKey));
-    const result = await ctx.run(['docker', 'run', '--rm', '--read-only', '--network', 'none', '--user', '0:0', '--cap-drop', 'ALL',
-      '--security-opt', 'no-new-privileges:true', '--tmpfs', '/tmp',
-      '-v', `${join(dir, 'auth.enc.json')}:/backup/auth.enc.json:ro`, '-v', `${privateKey}:/keys/private.pem:ro`,
-      '--entrypoint', 'node', image, 'scripts/backup.mjs', 'restore',
-      '--input', '/backup/auth.enc.json', '--private-key', '/keys/private.pem', '--destination', '/tmp/restore-check']);
-    ok = result.code === 0;
+    ok = await checkAuthPart(ctx, dir, privateKey, image);
   } catch {
     ok = false;
   }
@@ -134,6 +140,9 @@ async function apply(ctx, dir, privateKey) {
   const p = paths(ctx.root);
   const files = readBackup(dir, privateKey);
   const { version, image } = backupRelease(files);
+  // The auth part too, before the stack is stopped or any file is replaced.
+  if (!await checkAuthPart(ctx, dir, privateKey, image))
+    throw new Failure(`the auth part of ${dir} did not pass auth's own check; nothing was changed`);
 
   await stopStack(ctx);
   for (const name of HOST_TREES) restoreTree(ctx, files, name);

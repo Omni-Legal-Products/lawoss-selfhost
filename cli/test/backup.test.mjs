@@ -206,7 +206,9 @@ describe('restore --apply', () => {
     assert.ok(restoredEnv, 'doctor ran after the restore');
 
     const image = `lawoss-auth@sha256:${'0'.repeat(64)}`;
-    const authRun = t.calls.find(argv => argv[1] === 'run' && argv.some(arg => arg.endsWith(':/keys/private.pem:ro')));
+    const authCheck = t.calls.find(argv => argv[1] === 'run' && argv.includes('/tmp/restore-check'));
+    assert.ok(authCheck && authCheck.includes('node'), 'the auth part is checked first, in a throwaway container');
+    const authRun = t.calls.find(argv => argv[1] === 'run' && argv.includes('sh') && argv.some(arg => arg.endsWith(':/keys/private.pem:ro')));
     assert.ok(authRun, 'auth\'s own restore runs in a one-off container');
     assert.ok(authRun.includes(image));
     assert.ok(authRun.includes(`${key}:/keys/private.pem:ro`) && authRun.includes(`${join(dir, 'auth.enc.json')}:/backup/auth.enc.json:ro`));
@@ -215,10 +217,11 @@ describe('restore --apply', () => {
     assert.match(authRun.at(-1), /scripts\/backup\.mjs restore .*--destination \/tmp\/restore/);
     assert.match(authRun.at(-1), /rm -f \/data\/auth\.sqlite-wal \/data\/auth\.sqlite-shm/);
     const kinds = t.calls.map(argv => argv[1] === 'ps' || argv[1] === 'stop' ? argv[1] : argv[1] === 'volume' ? `volume ${argv[2]}`
-      : argv === authRun ? 'auth' : argv[1] === 'run' && argv.includes('sh') ? 'hub-data' : argv.includes('up') ? 'up' : 'doctor');
-    assert.deepEqual(kinds.slice(0, 9),
-      ['ps', 'stop', 'volume inspect', 'volume create', 'auth', 'volume inspect', 'volume create', 'hub-data', 'up'], kinds.join(' '));
-    assert.deepEqual(t.calls[1], ['docker', 'stop', RUNNING_ID]);
+      : argv === authCheck ? 'check' : argv === authRun ? 'auth' : argv[1] === 'run' && argv.includes('sh') ? 'hub-data'
+        : argv.includes('up') ? 'up' : 'doctor');
+    assert.deepEqual(kinds.slice(0, 10),
+      ['check', 'ps', 'stop', 'volume inspect', 'volume create', 'auth', 'volume inspect', 'volume create', 'hub-data', 'up'], kinds.join(' '));
+    assert.deepEqual(t.calls[2], ['docker', 'stop', RUNNING_ID]);
     assert.equal(t.out.at(-1), `PASS restore ${dir}`);
     assert.ok(t.out.slice(0, -1).every(line => line.startsWith("PASS ")), "doctor lines before it");
     assert.ok(![...t.out, ...t.err].join('\n').includes(SENTINEL));
@@ -239,6 +242,20 @@ describe('restore --apply', () => {
     assert.match(fresh.err.join('\n'), /outside/);
     assert.equal(fresh.calls.length, 0);
     assert.equal(existsSync(join(fresh.root, '.env')), false);
+  });
+
+  it('refuses a backup whose auth part does not pass auth\'s check, before stopping anything', async () => {
+    const { dir, key } = await backedUp();
+    const fresh = setup();
+    writeFileSync(join(fresh.root, '.env'), 'EXISTING=1\n', { mode: 0o600 });
+    const before = hostBytes(fresh.root);
+    fresh.state.handler = argv => argv.includes('/tmp/restore-check') ? { code: 1, stdout: '', stderr: '' } : undefined;
+    assert.equal(await fresh.cli('restore', '--apply', '--private-key', key, dir), 1);
+    assert.match(fresh.err.join('\n'), /auth part .* did not pass/);
+    assert.equal(fresh.calls.length, 1, 'only the check ran: no stop, no restore');
+    assert.equal(read(join(fresh.root, '.env')), 'EXISTING=1\n');
+    assert.deepEqual(hostBytes(fresh.root), before);
+    assert.equal(existsSync(join(fresh.root, 'releases')), false);
   });
 
   it('refuses a backup whose kept host files do not match its release record', async () => {
