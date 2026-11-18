@@ -206,11 +206,16 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<Server
   const server = withHealth(hub).listen(port, '0.0.0.0');
   await once(server, 'listening');
   log(JSON.stringify({ time: new Date().toISOString(), event: 'listening', port: (server.address() as AddressInfo).port }));
+  // Shutdown: stop accepting, let calls in flight finish briefly, then stop every runtime process
+  // before exiting (within Docker's default 10 s stop grace period).
+  let draining: Promise<void> | undefined;
+  const drain = () => { draining ??= pool.stopAll().finally(() => process.exit(0)); };
   for (const signal of ['SIGTERM', 'SIGINT'] as const)
     process.once(signal, () => {
-      server.close(() => process.exit(0));
+      server.close(drain);
       server.closeIdleConnections();
-      setTimeout(() => process.exit(0), 10_000).unref();
+      setTimeout(drain, 4_000).unref();
+      setTimeout(() => process.exit(0), 9_000).unref();
     });
   return server;
 }

@@ -1,7 +1,9 @@
 # Hub image. Build context: hub/ (docker build -f hub/Dockerfile hub).
 # Same Node base as auth/Dockerfile, pinned by digest.
 FROM node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS build
-# git and CA certificates only for fetching the catalog in this stage.
+# git and CA certificates only for fetching the catalog in this stage. Unpinned on purpose: this
+# stage's outputs are digest-verified (runtimes against their provenance, the catalog by commit id)
+# or installed from lockfiles, and none of these packages reaches the final image.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates \
  && rm -rf /var/lib/apt/lists/*

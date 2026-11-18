@@ -82,8 +82,11 @@ export const INTERNAL_ERROR_TEXT = 'Služba je dočasne nedostupná. Skúste to 
 export const TIMEOUT_TEXT = 'Služba neodpovedala včas. Skúste to znova.';
 export const INVALID_PARAMS_TEXT = 'Neplatné argumenty nástroja.';
 export const RETRY_TEXT = 'Príliš veľa požiadaviek. Skúste to o chvíľu znova.';
-/** JSON-RPC server-error code (implementation-defined range) of the retryable refusal. */
-export const RETRY_CODE = -32001;
+/**
+ * JSON-RPC server-error code (implementation-defined range) of the retryable refusal. Not -32000,
+ * -32001 or -32002, which the SDK uses for connection closed, request timeout and resource errors.
+ */
+export const RETRY_CODE = -32029;
 // Bounds the runtime tools/list pages read to check one allow-without schema.
 const MAX_LIST_PAGES = 20;
 

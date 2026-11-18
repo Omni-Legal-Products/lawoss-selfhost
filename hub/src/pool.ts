@@ -148,6 +148,11 @@ export class ProcessPool implements RuntimePool {
     return entry;
   }
 
+  /** Stops every runtime process, for example on shutdown. Never rejects. */
+  async stopAll(): Promise<void> {
+    await Promise.all([...this.entries.values()].map(entry => this.stop(entry)));
+  }
+
   async stopPrincipal(principal: string): Promise<void> {
     await Promise.all([...this.entries.values()].filter(entry => entry.principal === principal).map(entry => this.stop(entry)));
   }
@@ -199,8 +204,15 @@ export class ProcessPool implements RuntimePool {
         // Runtime output may contain arguments or results, which the hub never logs.
         stderr: 'ignore',
       });
+      // Watch the child from spawn on, so that a runtime dying during initialize is reported too
+      // (once connect fails, the transport has already dropped its child process).
+      const start = transport.start.bind(transport);
+      transport.start = () => {
+        const started = start();
+        this.watchExit(entry, transport);
+        return started;
+      };
       await client.connect(transport);
-      this.watchExit(entry, transport);
     } catch (error) {
       this.forget(entry);
       await client.close().catch(() => {});

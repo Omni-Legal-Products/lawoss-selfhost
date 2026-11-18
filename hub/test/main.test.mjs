@@ -174,8 +174,12 @@ describe('hub entry point: serving', () => {
       assert.equal(JSON.parse(metadata.body).resource, 'https://crz.example.test/mcp');
       assert.equal((await get(port, '/.well-known/oauth-protected-resource/mcp', 'orsr.example.test')).status, 404, 'disabled service');
       assert.ok(!stderr.includes(SENTINEL));
-    } finally {
+      // SIGTERM drains the pool and closes the server, then exits cleanly.
+      const exited = new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal })));
       child.kill('SIGTERM');
+      assert.deepEqual(await exited, { code: 0, signal: null });
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     }
   });
 
