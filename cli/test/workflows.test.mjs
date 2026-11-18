@@ -20,6 +20,13 @@ describe('release workflow', () => {
     assert.match(text, /catalogCommit.*\n?.*CATALOG_COMMIT|CATALOG_COMMIT[\s\S]*catalogCommit/);
   });
 
+  it('runs only from main and checks the version without a line-based grep', () => {
+    assert.match(text, /^ {4}if: github\.ref == 'refs\/heads\/main'$/m);
+    assert.match(text, /case "\$VERSION" in\s*'' \| \[\.-\]\* \| \*\[!0-9A-Za-z\.-\]\*\) exit 1 ;;/);
+    assert.match(text, /\$\{#VERSION\}" -le 64/);
+    assert.doesNotMatch(text, /"\$VERSION" \| grep/);
+  });
+
   it('pins every action by commit SHA', () => {
     const uses = [...text.matchAll(/uses:\s*(\S+)/g)].map(match => match[1]);
     assert.ok(uses.length >= 4);

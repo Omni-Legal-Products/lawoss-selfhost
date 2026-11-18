@@ -21,6 +21,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   release:
+    # Dispatched from main only; a run from another branch is skipped.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -41,7 +43,11 @@ jobs:
       - name: Check the inputs against the checkout
         run: |
           set -eu
-          printf '%s\n' "$VERSION" | grep -Eq '^[0-9A-Za-z][0-9A-Za-z.-]{0,63}$'
+          # One token of letters, digits, '.' and '-' that is a valid image tag (no newline can slip past), at most 64 long.
+          case "$VERSION" in
+            '' | [.-]* | *[!0-9A-Za-z.-]*) exit 1 ;;
+          esac
+          test "${#VERSION}" -le 64
           printf '%s\n' "$CATALOG_COMMIT" | grep -Eq '^[0-9a-f]{40}$'
           test "$(node -p "require('./hub/services.json').catalogCommit")" = "$CATALOG_COMMIT"
           cmp AGENTS.md CLAUDE.md
