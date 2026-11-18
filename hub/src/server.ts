@@ -55,7 +55,8 @@ const MAX_REMEMBERED_TOKENS = 10_000;
 // The adapter's bearer syntax; other headers never authenticate, so they are never remembered.
 const BEARER = /^Bearer ([A-Za-z0-9\-._~+/]+=*)$/i;
 
-const principalHash = (principal: string): string =>
+/** Short, stable, non-reversible principal label for logs. */
+export const principalHash = (principal: string): string =>
   createHash('sha256').update(principal).digest('hex').slice(0, 16);
 
 function createServices(opts: HubOptions): Map<ServiceId, Service> {

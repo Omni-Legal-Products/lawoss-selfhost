@@ -237,6 +237,20 @@ describe('process pool', () => {
     assert.notEqual(fresh.pid, pid);
   });
 
+  it('reports each runtime exit with its code or signal', async () => {
+    const exits = [];
+    const pool = makePool({ onExit: event => exits.push(event) });
+    await assert.rejects(call(pool, A, 'echo', 'exit'));
+    await until(() => exits.length === 1, 'the crash to be reported');
+    assert.deepEqual(exits[0], { id: 'echo', principal: A, code: 3, signal: null });
+    await call(pool, B, 'other', 'env');
+    await pool.stopPrincipal(B);
+    await until(() => exits.length === 2, 'the stop to be reported');
+    assert.equal(exits[1].id, 'other');
+    assert.equal(exits[1].principal, B);
+    assert.ok(exits[1].code !== null || exits[1].signal !== null);
+  });
+
   it('stopPrincipal closes every process of that principal', async () => {
     const pool = makePool();
     const a1 = await call(pool, A, 'echo', 'env');
