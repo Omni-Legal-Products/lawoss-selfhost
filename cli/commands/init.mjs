@@ -5,14 +5,15 @@
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import {
-  DNS_NAME, Failure, SERVICE_NAMES, UsageError, formatEnvValue, keepRecord, loadManifest, options, parseServiceList, paths,
-  providerKeys, randomKey, readRecord, resourceUrl, sha256, verifyAttestations, verifyHostFiles, writePrivateFile,
+  ACME_EMAIL, DNS_NAME, Failure, SERVICE_NAMES, UsageError, formatEnvValue, loadManifest, options, parseServiceList, paths,
+  providerKeys, randomKey, readRecord, renderCaddyfile, resourceUrl, sha256, verifyAttestations, verifyHostFiles, writePrivateFile,
 } from '../lib.mjs';
 import { checkPack, checkPackArg, ensureBrandDir, installStaged, resolvePack } from './brand.mjs';
+import { keepRelease } from '../host.mjs';
 
 
 /** A signing key as auth's oidc-provider takes it: an RSA private JWK with kid, alg and use. */
-function signingKey() {
+export function signingKey() {
   const jwk = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ format: 'jwk' });
   return { ...jwk, kid: randomUUID(), alg: 'RS256', use: 'sig' };
 }
@@ -40,15 +41,6 @@ export function generateConfig({ base, services, brand }) {
   return { auth, hub };
 }
 
-/** The Caddyfile: the auth site and one copy of the SERVICES section per enabled service. */
-export function renderCaddyfile(template, authHost, serviceHosts) {
-  const section = /^# \{\{#SERVICES\}\}\n([\s\S]*?)^# \{\{\/SERVICES\}\}\n/m;
-  const match = section.exec(template);
-  if (!match) throw new Failure('Caddyfile.template has no SERVICES section');
-  const blocks = serviceHosts.map(host => match[1].replaceAll('{{SERVICE_HOST}}', host)).join('');
-  return (template.slice(0, match.index) + blocks + template.slice(match.index + match[0].length)).replaceAll('{{AUTH_HOST}}', authHost);
-}
-
 export async function init(args, ctx) {
   const { values } = options(args, {
     base: { type: 'string' },
@@ -56,9 +48,12 @@ export async function init(args, ctx) {
     brand: { type: 'string' },
     record: { type: 'string' },
     'record-sha256': { type: 'string' },
+    'acme-email': { type: 'string' },
   });
   const base = values.base ?? '';
   if (!DNS_NAME.test(base)) throw new UsageError('--base must be a lowercase DNS name');
+  const acmeEmail = values['acme-email'] ?? '';
+  if (!ACME_EMAIL.test(acmeEmail)) throw new UsageError('--acme-email must be the certificate contact e-mail (name@lowercase.domain)');
   if (values.brand !== undefined) checkPackArg(values.brand);
   if (!values.record || !values['record-sha256']) throw new UsageError('--record and --record-sha256 are required');
   const p = paths(ctx.root);
@@ -73,7 +68,7 @@ export async function init(args, ctx) {
   // Everything is rendered and validated before the first write.
   const authHost = `auth.${base}`;
   const serviceHosts = services.map(id => `${id}.${base}`);
-  const caddyfile = renderCaddyfile(readFileSync(p.template, 'utf8'), authHost, serviceHosts);
+  const caddyfile = renderCaddyfile(readFileSync(p.template, 'utf8'), { base, services, acmeEmail });
   const pack = values.brand === undefined ? undefined : resolvePack(ctx, values.brand);
   try {
     if (pack && !await checkPack(ctx, record.images.auth, pack))
@@ -84,6 +79,8 @@ export async function init(args, ctx) {
       `LAWOSS_BASE=${base}`,
       `LAWOSS_SERVICES=${services.join(',')}`,
       `LAWOSS_RELEASE=${formatEnvValue(record.version)}`,
+      // The certificate contact; not a secret, kept so that every later Caddyfile render has it.
+      `LAWOSS_ACME_EMAIL=${formatEnvValue(acmeEmail)}`,
       `LAWOSS_AUTH_IMAGE=${record.images.auth}`,
       `LAWOSS_HUB_IMAGE=${record.images.hub}`,
       `LAWOSS_PROXY_IMAGE=${record.images.proxy}`,
@@ -102,7 +99,8 @@ export async function init(args, ctx) {
     writeFileSync(p.caddyfile, caddyfile);
     chmodSync(p.caddyfile, 0o644);
     ctx.chown(p.caddyfile, 0, 0);
-    keepRecord(ctx, record);
+    // The record and a copy of the host files, so that a later update can come back to them.
+    keepRelease(ctx, record);
   } finally {
     pack?.release();
   }

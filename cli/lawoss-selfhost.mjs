@@ -14,23 +14,31 @@ import { brand } from './commands/brand.mjs';
 import { invite } from './commands/invite.mjs';
 import { grant, revoke, disable, list } from './commands/admin.mjs';
 import { doctor, realProbes } from './commands/doctor.mjs';
-import { backup, restore } from './commands/backup.mjs';
+import { backup } from './commands/backup.mjs';
+import { restore } from './commands/restore.mjs';
 import { update, rollback } from './commands/update.mjs';
 import { setKey, unsetKey } from './commands/keys.mjs';
+import { restoreSnapshot } from './commands/restore-snapshot.mjs';
+import { rotate } from './commands/rotate.mjs';
+import { services } from './commands/services.mjs';
 
 export const USAGE = `Usage: lawoss-selfhost COMMAND
-  init --base BASE --services LIST [--brand PACK] --record PATH --record-sha256 HEX
+  init --base BASE --services LIST --acme-email EMAIL [--brand PACK] --record PATH --record-sha256 HEX
   brand check PACK [--record PATH --record-sha256 HEX] | brand preview PACK [...] | brand set PACK
   invite USER SERVICES
   grant USER SERVICES | revoke USER SERVICES | disable USER | list
   set-key NAME (value from stdin) | unset-key NAME
+  rotate introspection|cookies|signing
+  services add ID | services remove ID
   doctor
-  backup | restore --dry-run [BACKUP_DIR]
+  backup init-key | backup | restore --dry-run [--private-key PATH] [BACKUP_DIR] | restore --apply --record-sha256 HEX [--private-key PATH] BACKUP_DIR
   update --to VERSION --record PATH --record-sha256 HEX | rollback
+  restore-snapshot SNAPSHOT_DIR
 Environment: LAWOSS_ROOT (default /opt/lawoss).`;
 
 const COMMANDS = {
   init, brand, invite, grant, revoke, disable, list, 'set-key': setKey, 'unset-key': unsetKey, doctor, backup, restore, update, rollback,
+  'restore-snapshot': restoreSnapshot, rotate, services,
 };
 
 /** Runs one command with an injected context; returns the exit code. */

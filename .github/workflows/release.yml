@@ -1,0 +1,99 @@
+name: release
+# Publishing is a maintainer decision: this workflow runs only when a maintainer starts it by hand
+# (Actions > release > Run workflow). It builds the auth and hub images, pushes them to GHCR,
+# attests their build provenance (verified by the setup CLI with gh attestation verify) and uploads
+# releases/<version>.json with the image digests and the SHA-256 of every host file. The record is
+# pinned by its SHA-256 in a reviewed commit of the catalog; this workflow changes no repository.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version; also the image tag (letters, digits, '.' and '-')
+        required: true
+        type: string
+      catalog_commit:
+        description: Catalog commit the hub image embeds; must equal hub/services.json catalogCommit
+        required: true
+        type: string
+permissions: {}
+concurrency:
+  group: release
+  cancel-in-progress: false
+jobs:
+  release:
+    # Dispatched from main only; a run from another branch is skipped.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ inputs.version }}
+      CATALOG_COMMIT: ${{ inputs.catalog_commit }}
+      REGISTRY: ghcr.io/omni-legal-products
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24.22.1
+      - name: Check the inputs against the checkout
+        run: |
+          set -eu
+          # One token of letters, digits, '.' and '-' that is a valid image tag (no newline can slip past), at most 64 long.
+          case "$VERSION" in
+            '' | [.-]* | *[!0-9A-Za-z.-]*) exit 1 ;;
+          esac
+          test "${#VERSION}" -le 64
+          printf '%s\n' "$CATALOG_COMMIT" | grep -Eq '^[0-9a-f]{40}$'
+          test "$(node -p "require('./hub/services.json').catalogCommit")" = "$CATALOG_COMMIT"
+          cmp AGENTS.md CLAUDE.md
+      - name: Log in to GHCR
+        env:
+          TOKEN: ${{ github.token }}
+        run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      - name: Build and push the images
+        id: images
+        run: |
+          set -eu
+          for name in auth hub; do
+            ref="$REGISTRY/lawoss-$name:$VERSION"
+            if [ "$name" = auth ]; then
+              docker build --build-arg SOURCE_REVISION="$GITHUB_SHA" -t "$ref" auth
+            else
+              docker build --build-arg SOURCE_REVISION="$GITHUB_SHA" -t "$ref" -f hub/Dockerfile hub
+            fi
+            docker push "$ref"
+            digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$ref" | sed 's/.*@//')
+            printf '%s\n' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
+            echo "${name}_digest=$digest" >> "$GITHUB_OUTPUT"
+          done
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/omni-legal-products/lawoss-auth
+          subject-digest: ${{ steps.images.outputs.auth_digest }}
+          push-to-registry: true
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/omni-legal-products/lawoss-hub
+          subject-digest: ${{ steps.images.outputs.hub_digest }}
+          push-to-registry: true
+      - name: Write the release record
+        env:
+          AUTH_DIGEST: ${{ steps.images.outputs.auth_digest }}
+          HUB_DIGEST: ${{ steps.images.outputs.hub_digest }}
+        run: |
+          set -eu
+          mkdir -p releases
+          node deploy/release-record.mjs --src . --version "$VERSION" --commit "$GITHUB_SHA" \
+            --auth "$REGISTRY/lawoss-auth@$AUTH_DIGEST" --hub "$REGISTRY/lawoss-hub@$HUB_DIGEST" \
+            --note "lawoss-selfhost $VERSION" > "releases/$VERSION.json"
+          sha256sum "releases/$VERSION.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ inputs.version }}
+          path: releases/${{ inputs.version }}.json
+          if-no-files-found: error

@@ -46,12 +46,19 @@ describe('provider keys', () => {
   it('refuses an empty value or one that .env cannot hold, changing nothing', async () => {
     const t = await initialized('crz');
     const before = readFileSync(join(t.root, '.env'));
-    for (const value of ['', 'two\nlines', "it's", 'tab\there']) {
+    // A backslash, above all a trailing one, may escape the closing quote in Compose's dotenv reader.
+    for (const value of ['', 'two\nlines', "it's", 'tab\there', 'ends-with\\', 'mid\\dle']) {
       t.secrets.push(value);
       assert.equal(await t.cli('set-key', 'FS_API_KEY'), 1, JSON.stringify(value));
     }
     assert.deepEqual(readFileSync(join(t.root, '.env')), before);
     assert.equal(t.calls.length, 0);
+  });
+
+  it('formatEnvValue refuses a value that ends with a backslash', async () => {
+    const { formatEnvValue } = await import('../lib.mjs');
+    assert.throws(() => formatEnvValue('a b\\'), /cannot be written/);
+    assert.equal(formatEnvValue('a b'), "'a b'");
   });
 
   it('reads the value without echo on a terminal, and whole from piped stdin', async () => {

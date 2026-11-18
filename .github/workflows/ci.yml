@@ -82,7 +82,13 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: 24.22.1
-      # Standard library only: no install step, no lockfile.
+      # The CLI is standard library only (no install step, no lockfile). Its seam test imports the
+      # built hub and auth to check the configuration it writes, so both are built from their lockfiles.
+      - name: Build the hub and auth for the seam test
+        working-directory: .
+        run: |
+          (cd hub && npm ci --ignore-scripts && npm run build)
+          (cd auth && npm ci --ignore-scripts && npm run build)
       - run: npm test
   deploy:
     runs-on: ubuntu-latest

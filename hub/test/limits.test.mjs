@@ -130,4 +130,55 @@ describe('hub limits and timeouts', () => {
       assert.equal(pool.activeLeases, 0, 'the lease is released after a timed-out call');
     });
   });
+
+  it('tools/list counts against the per-principal rate limit and never reaches the runtime over it', async () => {
+    introspection.issue('list-limit-token', 'judikaty');
+    const limits = new Limits({ ratePerMinute: 1, perPrincipalConcurrency: 2, perServiceConcurrency: 4 });
+    await withHub({ limits }, async (pool, hub) => {
+      const first = await rpc(hub.port, 'judikaty', 'list-limit-token', 'tools/list');
+      assert.ok(Array.isArray(first.message.result.tools));
+      const second = await rpc(hub.port, 'judikaty', 'list-limit-token', 'tools/list');
+      assert.equal(second.message.error.message, RETRY_TEXT);
+      assert.equal(second.message.error.code, RETRY_CODE);
+      assert.equal(pool.leaseCalls, 1, 'the refused tools/list leased no runtime');
+    });
+  });
+
+  it('tools/list is bounded by per-principal concurrency', async () => {
+    introspection.issue('list-busy-token', 'judikaty');
+    const gate = deferred();
+    const limits = new Limits({ ratePerMinute: 30, perPrincipalConcurrency: 1, perServiceConcurrency: 4 });
+    const pool = fakePool({ onList: () => gate.promise });
+    await withHub({ pool, limits }, async (_pool, hub) => {
+      const slow = rpc(hub.port, 'judikaty', 'list-busy-token', 'tools/list');
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const refused = await rpc(hub.port, 'judikaty', 'list-busy-token', 'tools/list');
+      assert.equal(refused.message.error.message, RETRY_TEXT);
+      gate.resolve();
+      assert.ok(Array.isArray((await slow).message.result.tools));
+    });
+  });
+
+  it('runtime tools/list uses the configured call timeout, not the SDK default', async () => {
+    introspection.issue('list-slow-token', 'judikaty');
+    const pool = fakePool({ onList: () => new Promise(resolve => setTimeout(resolve, 500)) });
+    await withHub({ pool, callTimeoutMs: 50 }, async (_pool, hub) => {
+      const started = Date.now();
+      const response = await rpc(hub.port, 'judikaty', 'list-slow-token', 'tools/list');
+      assert.equal(response.message.error.message, TIMEOUT_TEXT);
+      assert.ok(Date.now() - started < 450, 'answered at the configured timeout');
+      assert.equal(pool.activeLeases, 0);
+    });
+  });
+
+  it('the allow-without schema check is bounded by the call timeout too', async () => {
+    introspection.issue('schema-slow-token', 'judikaty');
+    const pool = fakePool({ onList: () => new Promise(resolve => setTimeout(resolve, 500)) });
+    await withHub({ pool, callTimeoutMs: 50 }, async (_pool, hub) => {
+      const response = await rpc(hub.port, 'judikaty', 'schema-slow-token', 'tools/call',
+        { name: 'get_decision_full_text', arguments: { id: '1' } });
+      assert.equal(response.message.error.message, TIMEOUT_TEXT);
+      assert.equal(pool.runtimeCalls.length, 0);
+    });
+  });
 });

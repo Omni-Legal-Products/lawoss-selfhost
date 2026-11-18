@@ -1,92 +1,112 @@
 // update --to VERSION --record PATH --record-sha256 HEX: accepts only a release record whose bytes
 // hash to the value pinned in the catalog and whose host files (compose.yaml, services.json,
 // Caddyfile.template, the CLI in bin/) are installed under <root> already, verifies the images'
-// build attestations, shows its note and the image change, snapshots the
-// volumes, switches the image variables in .env atomically, starts the stack and runs doctor. If
-// the start or doctor fails, the previous .env is restored and the stack started again.
-// rollback: the same switch back to the images saved in .env.previous by the last update, once the
-// previous release's host files are installed again; a failed check is reported, not reverted.
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+// build attestations, shows its note and the image change, and takes a snapshot: .env, the
+// Caddyfile and the outgoing release's host files (from its kept copy in releases/<version>/), and
+// every volume with auth stopped. It then switches the image variables in .env atomically, renders
+// the Caddyfile from the new template, starts the stack and runs doctor. If the start or doctor
+// fails, .env, the Caddyfile and the outgoing release's host files are restored together and the
+// stack is started again; the volumes stay as they are, and restore-snapshot DIR puts them back too.
+// A release refused before the switch also puts the outgoing release's host files back in place.
+// rollback: the same switch to the release saved in .env.previous by the last update: its kept host
+// files are installed again and only the image variables of .env change (secrets rotated since stay);
+// a failed check is reported, not reverted.
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  Failure, PROJECT, UsageError, VOLUMES, compose, deployment, options, paths, printable, readEnvFile, readRecord, requireImage,
-  keepRecord, keptRecord, setEnvVars, stamp, verifyAttestations, verifyHostFiles, writePrivateFile,
+  Failure, UsageError, VERSION, deployment, options, paths, printable, readEnvFile, readRecord, requireImage, setEnvVars,
+  verifyAttestations, verifyHostFiles, writeCaddyfile, writePrivateFile,
 } from '../lib.mjs';
-import { runDoctor } from './doctor.mjs';
+import {
+  copyHostFiles, installFile, installRelease, keepRelease, keptRelease, startAndCheck, startContainers, startStack, takeSnapshot,
+} from '../host.mjs';
 
 const IMAGE_VARS = { auth: 'LAWOSS_AUTH_IMAGE', hub: 'LAWOSS_HUB_IMAGE', proxy: 'LAWOSS_PROXY_IMAGE' };
 
-/** Archives every volume read-only into <root>/snapshots/<time>/ with one-off containers. */
-async function snapshotVolumes(ctx, image) {
-  const p = paths(ctx.root);
-  mkdirSync(p.snapshots, { recursive: true, mode: 0o700 });
-  chmodSync(p.snapshots, 0o700);
-  const dir = join(p.snapshots, stamp(ctx.now()));
-  mkdirSync(dir, { mode: 0o700 });
-  ctx.chown(dir, 0, 0);
-  for (const volume of VOLUMES) {
-    const result = await ctx.run(['docker', 'run', '-v', `${PROJECT}_${volume}:/source/${volume}:ro`, '-v', `${dir}:/snapshot`,
-      '--rm', '--read-only', '--network', 'none', '--user', '0:0', '--cap-drop', 'ALL', '--cap-add', 'DAC_READ_SEARCH',
-      '--security-opt', 'no-new-privileges:true', '--entrypoint', 'tar', image, '-cf', `/snapshot/${volume}.tar`, '-C', '/source', volume]);
-    if (result.code !== 0) throw new Failure(`snapshot of ${volume} failed (exit ${result.code}); nothing was switched`);
-    // The archives hold the auth database and certificate keys: root-only like everything else here.
-    const archive = join(dir, `${volume}.tar`);
-    if (!existsSync(archive)) throw new Failure(`snapshot of ${volume} wrote no archive; nothing was switched`);
-    ctx.chown(archive, 0, 0);
-    chmodSync(archive, 0o600);
-  }
-  return dir;
-}
-
-/** Bounded, so that a start that hangs still reaches the rollback branch. */
-const WAIT_SECONDS = '300';
-const up = ctx => ctx.run([...compose(ctx.root), 'up', '-d', '--wait', '--wait-timeout', WAIT_SECONDS]);
-
-/** True when the stack started and doctor passed; any error counts as a failed check. */
-async function startAndCheck(ctx) {
+/** Puts the outgoing release's kept host files back after a refusal; never hides the refusal itself. */
+function putBack(ctx, version) {
   try {
-    if ((await up(ctx)).code !== 0) return 'start';
-    return (await runDoctor(ctx)) ? undefined : 'doctor';
-  } catch {
-    return 'doctor';
+    installRelease(ctx, version);
+    ctx.err(`lawoss-selfhost: the host files of ${version} are back in place`);
+  } catch (error) {
+    ctx.err(`lawoss-selfhost: the host files of ${version} could not be put back${error instanceof Failure ? `: ${error.message}` : ''}`);
   }
 }
 
 /**
- * Switches .env to `target` (release and images), starts and checks. With `revert`, a failure
- * restores the previous .env and starts again (update); without it, the failure is reported and the
- * operator decides (rollback, which is itself the way back).
+ * Snapshots, switches .env to `target` (release and images), renders the Caddyfile, starts and
+ * checks. `install` first installs the target's kept host files (rollback). With `revert`, a
+ * failure restores .env, the Caddyfile and the outgoing host files (update); without it, the failure
+ * is reported and the operator decides (rollback, which is itself the way back).
  */
-async function switchRelease(ctx, target, { revert }) {
+async function switchRelease(ctx, target, { revert, install }) {
   const p = paths(ctx.root);
   const current = deployment(ctx.root);
-  const snapshot = await snapshotVolumes(ctx, requireImage(current.images.auth, 'current auth'));
+  const outgoing = keptRelease(ctx.root, current.release);
+  let snapshot;
+  let stopped;
+  try {
+    ({ dir: snapshot, stopped } = await takeSnapshot(ctx, { release: current.release, image: requireImage(current.images.auth, 'current auth') }));
+  } catch (error) {
+    if (revert) putBack(ctx, current.release);
+    throw error;
+  }
   ctx.out(snapshot);
 
   const before = readFileSync(p.env);
   const previousBefore = existsSync(p.envPrevious) ? readFileSync(p.envPrevious) : undefined;
-  writePrivateFile(ctx, p.envPrevious, before);
-  writePrivateFile(ctx, p.env, setEnvVars(before.toString('utf8'), {
-    LAWOSS_RELEASE: target.version,
-    ...Object.fromEntries(Object.entries(IMAGE_VARS).map(([name, key]) => [key, target.images[name]])),
-  }));
-
-  const failed = await startAndCheck(ctx);
+  // Everything after the snapshot may fail (a disk filled by the archives, a file that cannot be
+  // written): it all takes the way back below, so auth, stopped for the snapshot, never stays down.
+  let failed;
+  let started = false;
+  try {
+    if (install) installRelease(ctx, target.version);
+    writePrivateFile(ctx, p.envPrevious, before);
+    writePrivateFile(ctx, p.env, setEnvVars(before.toString('utf8'), {
+      LAWOSS_RELEASE: target.version,
+      ...Object.fromEntries(Object.entries(IMAGE_VARS).map(([name, key]) => [key, target.images[name]])),
+    }));
+    writeCaddyfile(ctx, deployment(ctx.root));
+    started = true;
+    failed = await startAndCheck(ctx);
+  } catch {
+    failed = 'the switch';
+  }
   if (failed === undefined) {
     ctx.out(`switched to ${target.version}`);
     return 0;
   }
-  if (!revert) {
+  if (!revert && started) {
     ctx.out(`FAIL rollback ${target.version}`);
-    ctx.err(`lawoss-selfhost: ${failed} failed after rolling back; .env names ${target.version}; fix the cause, then run doctor`);
+    ctx.err(`lawoss-selfhost: ${failed} failed after rolling back; .env names ${target.version}; fix the cause and run doctor, ` +
+      `or return to the state before with restore-snapshot ${snapshot}`);
     return 1;
   }
-  writePrivateFile(ctx, p.env, before);
-  if (previousBefore === undefined) rmSync(p.envPrevious, { force: true });
-  else writePrivateFile(ctx, p.envPrevious, previousBefore);
-  const restarted = await up(ctx).then(result => result.code === 0, () => false);
-  ctx.err(`lawoss-selfhost: ${failed} failed after the switch; rolled back to ${current.release}` +
-    (restarted ? '' : ', but the stack did not start again; run docker compose up -d and doctor'));
+  // An update that failed, or a rollback that failed before the start: back to the state before.
+  // Whatever happens while restoring, the stack is started again and the snapshot is named.
+  const host = join(snapshot, 'host');
+  let restoreError;
+  let restarted = false;
+  try {
+    writePrivateFile(ctx, p.env, before);
+    if (previousBefore === undefined) rmSync(p.envPrevious, { force: true });
+    else writePrivateFile(ctx, p.envPrevious, previousBefore);
+    copyHostFiles(ctx, host, ctx.root, outgoing, `the snapshot's host files of ${current.release}`);
+    if (existsSync(join(host, 'Caddyfile'))) installFile(ctx, p.caddyfile, readFileSync(join(host, 'Caddyfile')));
+  } catch (error) {
+    restoreError = error;
+  } finally {
+    // Before the start nothing was recreated: the containers stopped for the snapshot come back as
+    // they were. After it, the stack is recreated from the restored files.
+    restarted = started
+      ? await startStack(ctx).then(result => result.code === 0, () => false)
+      : await startContainers(ctx, stopped).then(() => true, () => false);
+  }
+  if (!revert) ctx.out(`FAIL rollback ${target.version}`);
+  ctx.err(`lawoss-selfhost: ${failed} failed ${revert ? 'after the switch; rolled back' : 'before the start; went back'} to ${current.release}` +
+    (restoreError ? `, but restoring the files of ${current.release} failed${restoreError instanceof Failure ? ` (${restoreError.message})` : ` (${restoreError?.code ?? 'error'})`}` : '') +
+    (restarted ? '' : ', and the stack did not start again; run docker compose up -d and doctor') +
+    `; to return to the state before exactly, run restore-snapshot ${snapshot}`);
   return 1;
 }
 
@@ -95,13 +115,20 @@ export async function update(args, ctx) {
   if (!values.to || !values.record || !values['record-sha256']) throw new UsageError('--to, --record and --record-sha256 are required');
   const record = readRecord(values.record, values['record-sha256'], values.to);
   const current = deployment(ctx.root);
-  verifyHostFiles(ctx.root, record);
-  await verifyAttestations(ctx, record.images);
+  // The way back must exist before anything changes.
+  keptRelease(ctx.root, current.release);
+  try {
+    verifyHostFiles(ctx.root, record);
+    await verifyAttestations(ctx, record.images);
+  } catch (error) {
+    putBack(ctx, current.release);
+    throw error;
+  }
   ctx.out(`release ${current.release} -> ${record.version}`);
   for (const name of Object.keys(IMAGE_VARS)) ctx.out(`${name} ${current.images[name] ?? '(none)'} -> ${record.images[name]}`);
   for (const line of printable(record.note).split('\n')) ctx.out(`note: ${line}`);
-  const code = await switchRelease(ctx, { version: record.version, images: record.images }, { revert: true });
-  if (code === 0) keepRecord(ctx, record);
+  const code = await switchRelease(ctx, { version: record.version, images: record.images }, { revert: true, install: false });
+  if (code === 0) keepRelease(ctx, record);
   return code;
 }
 
@@ -113,8 +140,8 @@ export async function rollback(args, ctx) {
   const previous = readEnvFile(p.envPrevious);
   const images = Object.fromEntries(Object.entries(IMAGE_VARS).map(([name, key]) => [name, requireImage(previous[key], `previous ${name}`)]));
   const version = previous.LAWOSS_RELEASE;
-  if (!version || !/^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/.test(version)) throw new Failure('.env.previous has no valid LAWOSS_RELEASE');
-  // The previous release's compose.yaml, manifest and CLI must be back in place as well.
-  verifyHostFiles(ctx.root, keptRecord(ctx.root, version));
-  return switchRelease(ctx, { version, images }, { revert: false });
+  if (!version || !VERSION.test(version)) throw new Failure('.env.previous has no valid LAWOSS_RELEASE');
+  // The previous release's record and host files must be kept; nothing changes otherwise.
+  keptRelease(ctx.root, version);
+  return switchRelease(ctx, { version, images }, { revert: false, install: true });
 }

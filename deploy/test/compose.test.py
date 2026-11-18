@@ -197,14 +197,14 @@ class CaddyfileTemplateTest(unittest.TestCase):
         with open(CADDYFILE, encoding="utf-8") as handle:
             cls.template = handle.read()
 
-    def render(self, auth_host, service_hosts):
+    def render(self, auth_host, service_hosts, acme_email="ops@example.com"):
         """The rendering the setup CLI performs: one copy of the service section per enabled service."""
         section = re.compile(r"^# \{\{#SERVICES\}\}\n(.*?)^# \{\{/SERVICES\}\}\n", re.S | re.M)
         match = section.search(self.template)
         self.assertIsNotNone(match, "one {{#SERVICES}} ... {{/SERVICES}} section")
         blocks = "".join(match.group(1).replace("{{SERVICE_HOST}}", host) for host in service_hosts)
         text = self.template[:match.start()] + blocks + self.template[match.end():]
-        return text.replace("{{AUTH_HOST}}", auth_host)
+        return text.replace("{{AUTH_HOST}}", auth_host).replace("{{ACME_EMAIL}}", acme_email)
 
     def site_blocks(self, text):
         return re.findall(r"^(\S+) \{\n(.*?)^\}", text, re.S | re.M)
@@ -217,6 +217,13 @@ class CaddyfileTemplateTest(unittest.TestCase):
         self.assertRegex(sites["auth.example.com"], r"reverse_proxy auth:3000\b")
         for host in ("crz.example.com", "orsr.example.com"):
             self.assertRegex(sites[host], r"reverse_proxy hub:3000\b")
+
+    def test_global_options_carry_the_certificate_contact_email(self):
+        text = self.render("auth.example.com", ["crz.example.com"], "ops@example.com")
+        match = re.search(r"^\{\n(.*?)^\}\n", text, re.S | re.M)
+        self.assertIsNotNone(match, "a global options block")
+        self.assertEqual(match.group(1).strip(), "email ops@example.com")
+        self.assertLess(match.start(), text.index("auth.example.com {"), "global options come first")
 
     def test_host_header_passes_through_and_tls_stays_automatic(self):
         directives = "\n".join(line for line in self.template.splitlines() if not line.lstrip().startswith("#"))

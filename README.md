@@ -59,35 +59,109 @@ docker compose -f deploy/compose.yaml --env-file deploy/.env.example config -q
 
 ## Setup CLI
 
-`cli/lawoss-selfhost.mjs` (Node standard library only) is installed with `cli/lib.mjs` and
-`cli/commands/` to `/opt/lawoss/bin`, next to `compose.yaml`, `Caddyfile.template` and
-`services.json` in `/opt/lawoss`, all from the release's commit, and run with `sudo`. It generates
-every secret on the server into `/opt/lawoss/.env` (0600, root) and never prints a secret, key,
-activation link or password: its outputs are host names, `PASS`/`FAIL` lines and paths of 0600
-files. Account, backup and snapshot work runs in one-off containers; no container gets the Docker
-socket.
+`cli/lawoss-selfhost.mjs` (Node standard library only) is installed with `cli/lib.mjs`,
+`cli/host.mjs` and `cli/commands/` to `/opt/lawoss/bin`, next to `compose.yaml`, `Caddyfile.template`
+and `services.json` in `/opt/lawoss`, all from the release's commit, and run with `sudo` through
+`/opt/lawoss/bin/lawoss-selfhost`. It generates every secret on the server into `/opt/lawoss/.env`
+(0600, root) and never prints a secret, key, activation link or password: its outputs are host
+names, `PASS`/`FAIL` lines and paths of 0600 files. Account, backup, snapshot and restore work runs in
+one-off containers; no container gets the Docker socket.
+
+### Installing a release's host files
+
+`deploy/host-files.mjs` is the one map from repository paths to host paths (`deploy/compose.yaml` ->
+`compose.yaml`, `hub/services.json` -> `services.json`, `cli/**` -> `bin/**`, ...). From a checkout
+of this repository at the release's commit:
 
 ```sh
-lawoss-selfhost init --base example.com --services crz,orsr --record releases/VERSION.json --record-sha256 HEX
+sudo sh deploy/install-host-files.sh releases/VERSION.json RECORD_SHA256 .
+```
+
+The script checks the record against its pinned SHA-256, verifies the auth image's build
+attestation when `gh` is installed, copies the Node binary out of that digest-pinned image to
+`/opt/lawoss/node/bin/node` (the host needs no Node package; `bin/lawoss-selfhost` runs the CLI with
+it), checks every source file against the record before writing anything, installs them and checks
+again. It downloads nothing but the auth image.
+
+### Commands
+
+```sh
+lawoss-selfhost init --base example.com --services crz,orsr --acme-email ops@example.com --record releases/VERSION.json --record-sha256 HEX
 lawoss-selfhost invite alice crz,orsr      # prints /opt/lawoss/handoff/alice.link
 lawoss-selfhost set-key FS_API_KEY         # the value is read from stdin, without echo
 lawoss-selfhost doctor
+lawoss-selfhost backup init-key            # once; copy the private key off the server
+lawoss-selfhost backup
 lawoss-selfhost update --to VERSION --record releases/VERSION.json --record-sha256 HEX
+lawoss-selfhost rollback
+lawoss-selfhost restore-snapshot /opt/lawoss/snapshots/TIME
+lawoss-selfhost restore --apply --record-sha256 HEX --private-key /path/backup-private.pem /opt/lawoss/backups/TIME
+lawoss-selfhost rotate introspection       # or cookies, signing
+lawoss-selfhost services add judikaty      # or remove
 ```
 
 A release record (`releases/<version>.json`) names the commit, the image digests and the SHA-256 of
 every host file. `init` and `update` accept it only when its bytes hash to the value pinned in the
-catalog and the host files under `/opt/lawoss` match it (they are installed from the commit first;
-the CLI downloads nothing); when `gh` is installed they also run `gh attestation verify` for the
-auth and hub images and refuse on failure.
+catalog and the host files under `/opt/lawoss` match it; when `gh` is installed they also run
+`gh attestation verify` for the auth and hub images and refuse on failure. Every accepted release
+keeps its record and a copy of its host files in `/opt/lawoss/releases/<version>/`.
+
+`init --acme-email` is the contact the certificate authority receives; it is rendered as Caddy's
+global `email` option and kept in `.env` (not a secret).
+
+`doctor` checks DNS, then TLS and HTTP through `127.0.0.1:443` with each public host name as SNI and
+`Host` (no hairpin NAT needed), the issuer and resource metadata, the hub's authenticated path to auth
+(`hub --check-introspection` posts a junk token with each service's secret: a secret mismatch and a
+broken path are reported apart), that the hub image carries the host's `services.json`, and each
+runtime's tools.
+
+`update` takes a snapshot first (`.env`, the Caddyfile, the outgoing release's host files and every
+volume, archived with auth stopped for a moment), switches the image digests, renders the Caddyfile
+from the new template, recreates the stack and runs `doctor`. If that fails, `.env`, the Caddyfile and
+the host files are restored together and the old release is started again; `restore-snapshot DIR`
+also puts the volumes back. `rollback` installs the previous release's kept host files and switches
+only the image digests, so secrets rotated since stay.
+
+Backups: `backup init-key` creates the backup key pair once and never replaces it; `backup` seals to
+`keys/backup-public.pem` only, so the private key can and should live off the server. A backup holds
+auth's database (sealed by auth's own script), `hub-data`, `.env`, the Caddyfile, `brand/` and
+`releases/`. `restore --dry-run` checks one; `restore --apply` puts one back, also on a fresh server
+(certificates are issued again). A backup is sealed with the public key, which anyone may hold, so
+`--apply` trusts nothing in it for what it installs: `--record-sha256` is the catalog's pin of the
+backup's release record, the backup's `.env` must name that record's images, their attestations
+must verify (with `gh`), and only that release's host files are installed; the Caddyfile is
+rendered from its template. All of it is checked before anything is stopped or written.
+
+`rotate introspection` replaces every service secret in the hub and auth together; `rotate cookies`
+and `rotate signing` put a new key first and keep only the previous one (a signing key stays until
+the tokens it signed expire, 60 minutes). `services add|remove ID` changes both configurations,
+`LAWOSS_SERVICES` and the Caddyfile.
 
 Brand packs: `brand check PACK` and `brand preview PACK` validate or preview a pack directory (or
 a built-in pack name) without installing it; before `init` they take `--record` for the auth image.
 `brand set PACK` (or `init --brand PACK`) validates the pack with auth's own loader, copies
 `brand.json` and the files it declares to `/opt/lawoss/brand/<name>`, which auth mounts read-only at
-`/brand`, and points auth at it. Without a pack the built-in LAWOSS pack applies.
+`/brand`, and points auth at it. Without a pack the built-in LAWOSS pack applies; a pack directory
+may not be named like a built-in pack (`default`, `lawoss`).
 
-`lawoss-selfhost` without arguments lists every command. Tests: `cd cli && npm test`.
+`lawoss-selfhost` without arguments lists every command. Tests: `cd cli && npm test` (the seam test
+needs `hub/` and `auth/` built: `npm ci --ignore-scripts && npm run build` in each).
+
+## Releases
+
+`.github/workflows/release.yml` runs only when a maintainer starts it (`workflow_dispatch` with the
+version and the catalog commit). It builds the auth and hub images, pushes them to
+`ghcr.io/omni-legal-products`, attests their build provenance and uploads `releases/<version>.json`
+(written by `deploy/release-record.mjs`). Running it publishes; adding or changing it does not.
+
+## Operator notes
+
+- Runtimes run as the same user as the hub and as each other. A compromised runtime could read the
+  hub's environment (every introspection secret and provider key) and other users' runtime
+  directories; see `SECURITY.md`. If you suspect one, run `rotate introspection` and replace the
+  provider keys.
+- If a secret appears in any output by mistake, rotate it (`rotate`, `set-key`).
+- Keep the backup private key off the server; without it no backup can be restored.
 
 ## License
 

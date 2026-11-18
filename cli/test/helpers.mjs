@@ -80,6 +80,18 @@ export function healthyProbes(base) {
   };
 }
 
+/** The hub's `--check-introspection` answer: every enabled service (from .env) passes unless overridden. */
+export function introspectionAnswer(root, overrides = {}) {
+  const services = /^LAWOSS_SERVICES=(.*)$/m.exec(readFileSync(join(root, '.env'), 'utf8'))?.[1].split(',') ?? [];
+  const introspection = Object.fromEntries(services.map(id => [id, overrides[id] ?? 'ok']));
+  const passed = Object.values(introspection).every(result => result === 'ok');
+  return { code: passed ? 0 : 1, stdout: `${JSON.stringify({ introspection })}\n`, stderr: '' };
+}
+
+/** The hub's `--manifest-sha256` answer: the image carries the host's services.json unless told otherwise. */
+export const manifestAnswer = (root, digest = sha256(readFileSync(join(root, 'services.json')))) =>
+  ({ code: 0, stdout: `${JSON.stringify({ manifestSha256: digest })}\n`, stderr: '' });
+
 /** The hub's `--list-tools` answer for a service, as the fake runner returns it. */
 export const listToolsAnswer = (id, tools = toolsOf(id)) => ({ code: 0, stdout: `${JSON.stringify({ service: id, tools })}\n`, stderr: '' });
 
@@ -94,9 +106,10 @@ export function setup({ handler, probes, base = 'example.com' } = {}) {
   copyFileSync(join(repo, 'deploy', 'compose.yaml'), join(root, 'compose.yaml'));
   copyFileSync(join(repo, 'deploy', 'Caddyfile.template'), join(root, 'Caddyfile.template'));
   copyFileSync(join(repo, 'hub', 'services.json'), join(root, 'services.json'));
-  // The CLI as installed in <root>/bin.
+  // The CLI as installed in <root>/bin: every file of cli/ and cli/commands/ (not the tests).
   mkdirSync(join(root, 'bin', 'commands'), { recursive: true });
-  for (const name of ['lawoss-selfhost.mjs', 'lib.mjs', 'package.json']) copyFileSync(join(repo, 'cli', name), join(root, 'bin', name));
+  for (const entry of readdirSync(join(repo, 'cli'), { withFileTypes: true }))
+    if (entry.isFile()) copyFileSync(join(repo, 'cli', entry.name), join(root, 'bin', entry.name));
   for (const name of readdirSync(join(repo, 'cli', 'commands')))
     copyFileSync(join(repo, 'cli', 'commands', name), join(root, 'bin', 'commands', name));
   const { path: record, sha: recordSha } = writeRecord(root);
@@ -106,23 +119,39 @@ export function setup({ handler, probes, base = 'example.com' } = {}) {
   const err = [];
   const state = { handler, probes: probes ?? healthyProbes(base) };
   let ticks = 0;
+  /** The answer of the fake runner before any `state.leak` is added. */
+  async function answerOf(argv, opts) {
+    const answer = state.handler ? await state.handler(argv, opts) : undefined;
+    if (answer) return answer;
+    const at = argv.indexOf('--list-tools');
+    if (at >= 0) return listToolsAnswer(argv[at + 1]);
+    if (argv.includes('--check-introspection')) return introspectionAnswer(root);
+    // The running auth container of the project, as `docker ps -q` lists it.
+    if (argv[0] === 'docker' && argv[1] === 'ps') return { code: 0, stdout: `${RUNNING_ID}\n`, stderr: '' };
+    if (argv.includes('--manifest-sha256')) return manifestAnswer(root);
+    // A snapshot container: tar writes its archive into the mounted directory with a loose mode.
+    const snapshot = argv.find(arg => arg.endsWith(':/snapshot'));
+    if (snapshot && argv.includes('tar')) {
+      const archive = argv[argv.indexOf('-cf') + 1].replace('/snapshot/', '');
+      writeFileSync(join(snapshot.slice(0, -':/snapshot'.length), archive), 'archive\n', { mode: 0o644 });
+    }
+    return { code: 0, stdout: '', stderr: '' };
+  }
+  async function run(argv, opts = {}) {
+    calls.push(argv);
+    const answer = await answerOf(argv, opts);
+    // `state.leak`: every container also prints this text (stdout too, unless it carries an answer).
+    return state.leak === undefined ? answer
+      : { ...answer, stdout: answer.stdout || state.leak, stderr: `${answer.stderr}${state.leak}` };
+  }
   const ctx = {
     root,
-    async run(argv, opts = {}) {
-      calls.push(argv);
-      const answer = state.handler ? await state.handler(argv, opts) : undefined;
-      if (answer) return answer;
-      const at = argv.indexOf('--list-tools');
-      if (at >= 0) return listToolsAnswer(argv[at + 1]);
-      // A snapshot container: tar writes its archive into the mounted directory with a loose mode.
-      const snapshot = argv.find(arg => arg.endsWith(':/snapshot'));
-      if (snapshot && argv.includes('tar')) {
-        const archive = argv[argv.indexOf('-cf') + 1].replace('/snapshot/', '');
-        writeFileSync(join(snapshot.slice(0, -':/snapshot'.length), archive), 'archive\n', { mode: 0o644 });
-      }
-      return { code: 0, stdout: '', stderr: '' };
+    run,
+    // `state.failChown(path)`: true makes this chown fail (an injected write error).
+    chown(path, uid, gid) {
+      if (state.failChown?.(path)) throw Object.assign(new Error('injected'), { code: 'EIO' });
+      chowns.push([path, uid, gid]);
     },
-    chown(path, uid, gid) { chowns.push([path, uid, gid]); },
     // Whether a command is on PATH; gh is absent unless a test says otherwise.
     which: name => (state.which ?? (() => false))(name),
     out: line => out.push(line),
@@ -143,11 +172,43 @@ export function setup({ handler, probes, base = 'example.com' } = {}) {
   return { root, ctx, calls, chowns, out, err, state, cli, record, recordSha, secrets };
 }
 
+/** The container id the fake `docker ps` reports. */
+export const RUNNING_ID = 'c0ffee';
+
+/**
+ * Installs the host files of a next release under root, as install-host-files.sh would: compose.yaml,
+ * Caddyfile.template and one CLI module change, one module is added. Returns a record for them.
+ */
+export function installNextRelease(root, version = '0.0.1', images) {
+  const marker = `# release ${version}\n`;
+  for (const name of ['compose.yaml', 'Caddyfile.template', 'bin/commands/doctor.mjs'])
+    writeFileSync(join(root, name), `${readFileSync(join(root, name), 'utf8')}${name.endsWith('.mjs') ? '// ' : ''}${marker}`);
+  writeFileSync(join(root, 'bin', 'commands', 'added.mjs'), `// only in ${version}\n`);
+  const digit = String(version.split('.').at(-1));
+  return writeRecord(root, {
+    version,
+    commit: digit.repeat(40),
+    images: images ?? {
+      auth: `lawoss-auth@sha256:${digit.repeat(64)}`,
+      hub: `lawoss-hub@sha256:${digit.repeat(64)}`,
+      proxy: `caddy@sha256:${digit.repeat(64)}`,
+    },
+  });
+}
+
+/** The host files under root with their bytes, for byte-for-byte comparisons. */
+export function hostBytes(root) {
+  return Object.fromEntries(Object.keys(hostFiles(root)).sort().map(path => [path, readFileSync(join(root, path), 'utf8')]));
+}
+
+/** The certificate contact every test deployment uses. */
+export const ACME_EMAIL = 'ops@example.com';
+
 /** setup() plus a successful init for `services`. */
 export async function initialized(services = 'crz,orsr', options = {}) {
   const t = setup(options);
   const code = await t.cli('init', '--base', options.base ?? 'example.com', '--services', services,
-    '--record', t.record, '--record-sha256', t.recordSha);
+    '--acme-email', ACME_EMAIL, '--record', t.record, '--record-sha256', t.recordSha);
   if (code !== 0) throw new Error(`init failed: ${t.err.join('\n')}`);
   return t;
 }

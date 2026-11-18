@@ -8,7 +8,7 @@ const zeros = '0'.repeat(64);
 // --repo binds the attestation to this repository (gh refuses --owner together with --repo).
 const verify = image => ['gh', 'attestation', 'verify', `oci://${image}`, '--repo', 'Omni-Legal-Products/lawoss-selfhost'];
 const isGh = argv => argv[0] === 'gh';
-const initArgs = t => ['init', '--base', 'example.com', '--services', 'crz', '--record', t.record, '--record-sha256', t.recordSha];
+const initArgs = t => ['init', '--base', 'example.com', '--services', 'crz', '--acme-email', 'ops@example.com', '--record', t.record, '--record-sha256', t.recordSha];
 
 describe('build attestations', () => {
   it('init verifies the attestation of each image built by the organization when gh is available', async () => {

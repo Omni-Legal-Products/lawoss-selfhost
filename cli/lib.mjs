@@ -38,6 +38,8 @@ export const SERVICE_NAMES = Object.freeze({
 
 // The hub's rule for the base domain (hub/src/main.ts).
 export const DNS_NAME = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+// A certificate contact e-mail that Caddy reads as one token: no whitespace, braces or quotes.
+export const ACME_EMAIL = /^[A-Za-z0-9._%+-]{1,64}@(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 // An account name that auth accepts both as a user name and as a tenant, and that is a safe file name.
 export const ACCOUNT = /^[a-z0-9][a-z0-9_-]{2,63}$/;
 const SERVICE_ID = /^[a-z0-9]{1,32}$/;
@@ -100,7 +102,8 @@ export const readEnvFile = path => parseEnv(readFileSync(path, 'utf8'));
 /** One value as Compose reads it back unchanged: bare when plain, else single-quoted (literal). */
 export function formatEnvValue(value) {
   if (/^[A-Za-z0-9_.:@/,=+-]*$/.test(value)) return value;
-  if (/['\n\r]/.test(value)) throw new Failure('a configuration value cannot be written to .env');
+  // A trailing backslash could escape the closing quote in Compose's dotenv reader.
+  if (/['\n\r]/.test(value) || value.endsWith('\\')) throw new Failure('a configuration value cannot be written to .env');
   return `'${value}'`;
 }
 
@@ -179,9 +182,11 @@ export function deployment(root) {
   if (!base || !DNS_NAME.test(base)) throw new Failure('.env has no valid LAWOSS_BASE; run init again on a new server');
   const services = String(vars.LAWOSS_SERVICES ?? '').split(',').filter(Boolean);
   if (!services.length || services.some(id => !SERVICE_ID.test(id))) throw new Failure('.env has no valid LAWOSS_SERVICES');
+  const acmeEmail = vars.LAWOSS_ACME_EMAIL;
   return {
     base,
     services,
+    acmeEmail: typeof acmeEmail === 'string' && ACME_EMAIL.test(acmeEmail) ? acmeEmail : undefined,
     issuer: `https://auth.${base}`,
     release: vars.LAWOSS_RELEASE ?? 'unknown',
     images: { auth: vars.LAWOSS_AUTH_IMAGE, hub: vars.LAWOSS_HUB_IMAGE, proxy: vars.LAWOSS_PROXY_IMAGE },
@@ -189,6 +194,51 @@ export function deployment(root) {
 }
 
 export const resourceUrl = (id, base) => `https://${id}.${base}/mcp`;
+
+/** AUTH_CONFIG_JSON and HUB_CONFIG_JSON of an .env text, parsed; their values are never printed. */
+export function readConfigs(text) {
+  const vars = parseEnv(text);
+  let auth;
+  let hub;
+  try { auth = JSON.parse(vars.AUTH_CONFIG_JSON); hub = JSON.parse(vars.HUB_CONFIG_JSON); } catch { auth = undefined; }
+  if (auth === null || typeof auth !== 'object' || hub === null || typeof hub !== 'object')
+    throw new Failure('.env has no readable AUTH_CONFIG_JSON and HUB_CONFIG_JSON');
+  return { auth, hub };
+}
+
+/** The .env text with both configurations replaced, every other line kept. */
+export const withConfigs = (text, { auth, hub }, extra = {}) =>
+  setEnvVars(text, { AUTH_CONFIG_JSON: JSON.stringify(auth), HUB_CONFIG_JSON: JSON.stringify(hub), ...extra });
+
+/**
+ * The Caddyfile: the global options with the certificate contact, the auth site and one copy of
+ * the SERVICES section per enabled service.
+ */
+export function renderCaddyfile(template, { base, services, acmeEmail }) {
+  if (!ACME_EMAIL.test(acmeEmail ?? '')) throw new Failure('.env has no valid LAWOSS_ACME_EMAIL for the Caddyfile');
+  const section = /^# \{\{#SERVICES\}\}\n([\s\S]*?)^# \{\{\/SERVICES\}\}\n/m;
+  const match = section.exec(template);
+  if (!match) throw new Failure('Caddyfile.template has no SERVICES section');
+  const blocks = services.map(id => match[1].replaceAll('{{SERVICE_HOST}}', `${id}.${base}`)).join('');
+  return (template.slice(0, match.index) + blocks + template.slice(match.index + match[0].length))
+    .replaceAll('{{AUTH_HOST}}', `auth.${base}`).replaceAll('{{ACME_EMAIL}}', acmeEmail);
+}
+
+/** Renders <root>/Caddyfile from <root>/Caddyfile.template; root-owned 0644, replaced atomically. */
+export function writeCaddyfile(ctx, settings) {
+  const p = paths(ctx.root);
+  const text = renderCaddyfile(readFileSync(p.template, 'utf8'), settings);
+  const temp = join(ctx.root, `.Caddyfile.${randomKey(9)}.tmp`);
+  try {
+    writeFileSync(temp, text, { flag: 'wx', mode: 0o644 });
+    chmodSync(temp, 0o644);
+    ctx.chown(temp, 0, 0);
+    renameSync(temp, p.caddyfile);
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
+  }
+}
 
 export function requireImage(ref, name) {
   if (typeof ref !== 'string' || !IMAGE.test(ref)) throw new Failure(`.env has no ${name} image pinned by digest`);
@@ -198,14 +248,17 @@ export function requireImage(ref, name) {
 // ---------------------------------------------------------------------------------------------
 // Release records: releases/<version>.json, pinned by its SHA-256 in a reviewed catalog commit.
 
+export const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/;
+
 const RECORD_FIELDS = new Set(['version', 'commit', 'images', 'files', 'note']);
 const IMAGE_FIELDS = ['auth', 'hub', 'proxy'];
 /**
- * Host files a release installs under <root> from its commit: the deployment files and the CLI in
- * bin/. A record lists each with its SHA-256; these must always be among them.
+ * Host files a release installs under <root> from its commit (deploy/host-files.mjs maps them): the
+ * deployment files, the CLI in bin/ and its wrapper bin/lawoss-selfhost, which runs it with the Node
+ * binary taken from the auth image. A record lists each with its SHA-256; these must always be among them.
  */
-export const REQUIRED_HOST_FILES = ['compose.yaml', 'services.json', 'Caddyfile.template', 'bin/lawoss-selfhost.mjs', 'bin/lib.mjs'];
-const HOST_FILE = /^(?:compose\.yaml|services\.json|Caddyfile\.template|bin\/package\.json|bin\/(?:commands\/)?[a-z0-9-]{1,64}\.mjs)$/;
+export const REQUIRED_HOST_FILES = ['compose.yaml', 'services.json', 'Caddyfile.template', 'bin/lawoss-selfhost', 'bin/lawoss-selfhost.mjs', 'bin/lib.mjs'];
+const HOST_FILE = /^(?:compose\.yaml|services\.json|Caddyfile\.template|bin\/package\.json|bin\/lawoss-selfhost|bin\/(?:commands\/)?[a-z0-9-]{1,64}\.mjs)$/;
 
 export function validateRecord(record, version) {
   if (record === null || typeof record !== 'object' || Array.isArray(record)) throw new Failure('release record must be a JSON object');
@@ -231,7 +284,7 @@ export function validateRecord(record, version) {
 }
 
 /** The host files under <root> that a record must cover: the fixed files and everything in bin/. */
-function installedHostFiles(root) {
+export function installedHostFiles(root) {
   const found = [];
   const walk = relative => {
     const dir = join(root, relative);
@@ -252,15 +305,21 @@ function installedHostFiles(root) {
  * Nothing is downloaded; the skill installs the files from the record's commit.
  */
 export function verifyHostFiles(root, record) {
+  const wrong = hostFileDifferences(root, record);
+  if (wrong.length)
+    throw new Failure(`host files of release ${record.version} must be installed first: ${wrong.join(', ')} differ from its record`);
+}
+
+/** The record's host files that are missing or changed under `dir`, and the bin/ files it does not list; sorted. */
+export function hostFileDifferences(dir, record) {
   const wrong = [];
   for (const [path, digest] of Object.entries(record.files)) {
-    const full = join(root, path);
+    const full = join(dir, path);
     const info = lstatSync(full, { throwIfNoEntry: false });
     if (!info?.isFile() || sha256(readFileSync(full)) !== digest) wrong.push(path);
   }
-  for (const path of installedHostFiles(root)) if (!Object.hasOwn(record.files, path)) wrong.push(path);
-  if (wrong.length)
-    throw new Failure(`host files of release ${record.version} must be installed first: ${wrong.sort().join(', ')} differ from its record`);
+  for (const path of installedHostFiles(dir)) if (!Object.hasOwn(record.files, path)) wrong.push(path);
+  return wrong.sort();
 }
 
 /** Keeps the accepted record (no secret) as <root>/releases/<version>.json, for rollback. */
@@ -283,7 +342,6 @@ export function keptRecord(root, version) {
   return validateRecord(record, version);
 }
 
-const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/;
 
 /** Reads a record and accepts it only when its bytes hash to the pinned value (and name `version`, if given). */
 export function readRecord(path, pinnedSha, version) {

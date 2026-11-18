@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { after, describe, it } from 'node:test';
+import { after, before, describe, it } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { exitLogLine, parseHubConfig, verifyRuntimes } from '../dist/main.js';
+import { checkIntrospection, exitLogLine, parseHubConfig, verifyRuntimes } from '../dist/main.js';
+import { secrets as harnessSecrets, startIntrospection } from './harness.mjs';
 import { loadManifest } from '../dist/manifest.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -220,5 +221,71 @@ describe('hub entry point: --list-tools', () => {
     const failed = listTools(['crz'], baseEnv({ LAWOSS_RUNTIMES_DIR: bad }));
     assert.equal(failed.status, 1);
     assert.match(failed.stderr, /digest mismatch/);
+  });
+});
+
+describe('hub entry point: --check-introspection', () => {
+  let introspection;
+  before(async () => { introspection = await startIntrospection(); });
+  after(async () => { await introspection.close(); });
+  // Sends the request the hub would send to https://auth.<base> to the fake on 127.0.0.1 instead.
+  const toFake = target => (url, init) => fetch(String(url).replace('https://auth.example.test', target), init);
+  const hubConfig = secretsById => parseHubConfig(JSON.stringify({
+    base: 'example.test', issuer: 'https://auth.example.test', services: Object.keys(secretsById), secrets: secretsById,
+  }), manifest);
+
+  it('posts a junk token with each service secret and expects an inactive answer', async () => {
+    const seen = [];
+    const fetchSpy = async (url, init) => {
+      seen.push({ url: String(url), init });
+      return toFake(introspection.issuer)(url, init);
+    };
+    const result = await checkIntrospection(hubConfig({ crz: harnessSecrets.crz, judikaty: harnessSecrets.judikaty }), { fetch: fetchSpy });
+    assert.deepEqual(result, { crz: 'ok', judikaty: 'ok' });
+    assert.equal(seen.length, 2);
+    for (const { url, init } of seen) {
+      assert.equal(url, 'https://auth.example.test/resource/introspect');
+      assert.equal(init.method, 'POST');
+      assert.equal(init.redirect, 'error');
+      const form = new URLSearchParams(init.body);
+      assert.match(form.get('resource'), /^https:\/\/(crz|judikaty)\.example\.test\/mcp$/);
+      assert.match(form.get('token'), /^[A-Za-z0-9_-]{32,}$/, 'a random junk token, never a real one');
+    }
+  });
+
+  it('a 401 means the hub and auth disagree about the secret; a network error means the path is broken', async () => {
+    const wrong = `crz-wrong-${SENTINEL}`;
+    const result = await checkIntrospection(hubConfig({ crz: wrong, judikaty: harnessSecrets.judikaty }), { fetch: toFake(introspection.issuer) });
+    assert.deepEqual(result, { crz: 'secret-mismatch', judikaty: 'ok' });
+    const closed = await checkIntrospection(hubConfig({ crz: harnessSecrets.crz }), { fetch: toFake('http://127.0.0.1:1') });
+    assert.deepEqual(closed, { crz: 'unreachable' });
+    const odd = await checkIntrospection(hubConfig({ crz: harnessSecrets.crz }),
+      { fetch: async () => new Response(JSON.stringify({ active: true }), { status: 200 }) });
+    assert.deepEqual(odd, { crz: 'unexpected' }, 'a junk token reported active is not a pass');
+    assert.ok(!JSON.stringify({ result, closed, odd }).includes(SENTINEL));
+  });
+
+  it('the command line mode prints only service ids and result classes, and exits 1 on a failure', () => {
+    const result = spawnSync(process.execPath, [mainScript, '--check-introspection'], {
+      env: baseEnv({ HUB_CONFIG_JSON: JSON.stringify(config()) }), encoding: 'utf8', timeout: 30_000,
+    });
+    // auth.example.test does not resolve: the path is broken, which is a failure.
+    assert.equal(result.status, 1, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { introspection: { crz: 'unreachable' } });
+    assert.ok(!result.stdout.includes(SENTINEL) && !result.stderr.includes(SENTINEL));
+    const invalid = spawnSync(process.execPath, [mainScript, '--check-introspection'], {
+      env: baseEnv({ HUB_CONFIG_JSON: `{"secrets":"${SENTINEL}"` }), encoding: 'utf8', timeout: 15_000,
+    });
+    assert.equal(invalid.status, 1);
+    assert.match(invalid.stderr, /HUB_CONFIG_JSON is not valid JSON/);
+    assert.ok(!invalid.stderr.includes(SENTINEL));
+  });
+});
+
+describe('hub entry point: --manifest-sha256', () => {
+  it('prints the SHA-256 of the services.json baked next to dist/, without needing HUB_CONFIG_JSON', () => {
+    const result = spawnSync(process.execPath, [mainScript, '--manifest-sha256'], { env: { PATH: process.env.PATH }, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { manifestSha256: sha256(readFileSync(join(here, '..', 'services.json'))) });
   });
 });
