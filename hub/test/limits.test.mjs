@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { DEFAULT_LIMITS, Limits, RetryableError } from '../dist/limits.js';
-import { RETRY_TEXT, TIMEOUT_TEXT } from '../dist/server.js';
+import { RETRY_CODE, RETRY_TEXT, TIMEOUT_TEXT } from '../dist/server.js';
 import { fakePool, rpc, startHub, startIntrospection } from './harness.mjs';
 
 const deferred = () => {
@@ -94,6 +94,9 @@ describe('hub limits and timeouts', () => {
       assert.equal(second.message.result, undefined);
       assert.equal(second.message.error.message, RETRY_TEXT);
       assert.equal(RETRY_TEXT, 'Príliš veľa požiadaviek. Skúste to o chvíľu znova.');
+      // A server-error code of its own, so clients can tell a retryable refusal from an internal error.
+      assert.equal(second.message.error.code, RETRY_CODE);
+      assert.equal(RETRY_CODE, -32001);
       assert.equal(pool.runtimeCalls.length, 1);
       // The hub holds a lease on the runtime for the whole call, and releases it.
       assert.equal(pool.leaseCalls, 1);
@@ -107,6 +110,7 @@ describe('hub limits and timeouts', () => {
     await withHub({ pool }, async (_pool, hub) => {
       const response = await rpc(hub.port, 'judikaty', 'full-token', 'tools/list');
       assert.equal(response.message.error.message, RETRY_TEXT);
+      assert.equal(response.message.error.code, RETRY_CODE);
     });
   });
 

@@ -82,6 +82,8 @@ export const INTERNAL_ERROR_TEXT = 'Služba je dočasne nedostupná. Skúste to 
 export const TIMEOUT_TEXT = 'Služba neodpovedala včas. Skúste to znova.';
 export const INVALID_PARAMS_TEXT = 'Neplatné argumenty nástroja.';
 export const RETRY_TEXT = 'Príliš veľa požiadaviek. Skúste to o chvíľu znova.';
+/** JSON-RPC server-error code (implementation-defined range) of the retryable refusal. */
+export const RETRY_CODE = -32001;
 // Bounds the runtime tools/list pages read to check one allow-without schema.
 const MAX_LIST_PAGES = 20;
 
@@ -96,7 +98,7 @@ class PublicError extends Error {
 }
 
 function publicError(error: unknown): PublicError {
-  if (error instanceof RetryableError) return new PublicError(ErrorCode.InternalError, RETRY_TEXT);
+  if (error instanceof RetryableError) return new PublicError(RETRY_CODE, RETRY_TEXT);
   const code = error instanceof McpError ? error.code : undefined;
   if (code === ErrorCode.RequestTimeout) return new PublicError(ErrorCode.RequestTimeout, TIMEOUT_TEXT);
   if (code === ErrorCode.InvalidParams) return new PublicError(ErrorCode.InvalidParams, INVALID_PARAMS_TEXT);
