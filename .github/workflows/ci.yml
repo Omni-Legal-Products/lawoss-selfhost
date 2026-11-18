@@ -26,6 +26,31 @@ jobs:
         run: |
           sed 's#  #  ./#' EXPORT_MANIFEST.sha256 | sha256sum --check --quiet
       - run: docker build -t lawoss-auth:test .
+  hub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: Omni-Legal-Products/lawoss-marketplace
+          path: catalog
+          fetch-depth: 0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.22.1
+          cache: npm
+          cache-dependency-path: hub/package-lock.json
+      - name: Install and test
+        working-directory: hub
+        run: |
+          npm ci --ignore-scripts
+          npm test
+      - name: Fetch verified runtimes and cross-check tools
+        run: |
+          COMMIT=$(node -p "require('./hub/services.json').catalogCommit")
+          node hub/scripts/fetch-runtimes.mjs --catalog catalog --catalog-commit "$COMMIT" --out "$RUNNER_TEMP/runtimes"
+          cd hub
+          LAWOSS_RUNTIMES_DIR="$RUNNER_TEMP/runtimes" LAWOSS_CACHE_DIR="$RUNNER_TEMP/lawoss-cache" node --test test/manifest.test.mjs
   agents-mirror:
     runs-on: ubuntu-latest
     steps:
