@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { createPrivateKey } from 'node:crypto';
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { SECRETISH, SENTINEL, initialized, setup } from './helpers.mjs';
 
 // Answers the backup containers: the auth snapshot and the hub-data archive land in the mounted directory.
@@ -24,6 +25,7 @@ describe('backup', () => {
   it('backs up both volumes and the configuration read-only, encrypted, and prints only 0600 paths', async () => {
     const t = await initialized('crz');
     t.state.handler = backupWrites;
+    assert.equal(await t.cli('backup', 'init-key'), 0, t.err.join('\n'));
     assert.equal(await t.cli('backup'), 0, t.err.join('\n'));
     const runs = t.calls.filter(argv => argv[1] === 'run');
     assert.equal(runs.length, 2);
@@ -34,12 +36,8 @@ describe('backup', () => {
       assert.match(volume, /:ro$/, 'volumes are mounted read-only');
       assert.ok(!argv.join(' ').includes('AUTH_CONFIG_JSON='), 'no secret in the argument vector');
     }
-    const key = join(t.root, 'keys', 'backup-private.pem');
-    assert.equal(statSync(key).mode & 0o777, 0o600);
-    assert.equal(createPrivateKey(readFileSync(key)).asymmetricKeyDetails.modulusLength, 3072);
-    assert.equal(t.out.length, 2);
-    const [dir, printedKey] = t.out;
-    assert.equal(printedKey, key);
+    assert.equal(t.out.length, 1, 'backup prints only the backup directory');
+    const [dir] = t.out;
     for (const name of ['auth.enc.json', 'host.enc.json']) {
       const file = join(dir, name);
       assert.equal(statSync(file).mode & 0o777, 0o600, name);
@@ -57,6 +55,7 @@ describe('backup', () => {
   it('restore --dry-run decrypts and checks the latest backup without writing anything', async () => {
     const t = await initialized('crz');
     t.state.handler = backupWrites;
+    assert.equal(await t.cli('backup', 'init-key'), 0);
     assert.equal(await t.cli('backup'), 0);
     const [dir] = t.out;
     t.state.handler = argv => argv.includes('restore') ? { code: 0, stdout: SENTINEL, stderr: '' } : undefined;
@@ -72,6 +71,7 @@ describe('backup', () => {
   it('restore --dry-run fails on a tampered host part', async () => {
     const t = await initialized('crz');
     t.state.handler = backupWrites;
+    assert.equal(await t.cli('backup', 'init-key'), 0);
     assert.equal(await t.cli('backup'), 0);
     const [dir] = t.out;
     const file = join(dir, 'host.enc.json');
@@ -81,6 +81,68 @@ describe('backup', () => {
     t.state.handler = undefined;
     assert.equal(await t.cli('restore', '--dry-run'), 1);
     assert.deepEqual(t.out, [`FAIL backup ${dir}`]);
+  });
+});
+
+describe('backup key', () => {
+  it('backup refuses without a key pair and never creates one itself', async () => {
+    const t = await initialized('crz');
+    t.state.handler = backupWrites;
+    assert.equal(await t.cli('backup'), 1);
+    assert.match(t.err.join('\n'), /backup init-key/);
+    assert.equal(existsSync(join(t.root, 'keys', 'backup-private.pem')), false);
+    assert.equal(existsSync(join(t.root, 'keys', 'backup-public.pem')), false);
+    assert.equal(t.calls.length, 0);
+  });
+
+  it('backup init-key creates the pair once, prints only paths, and refuses to replace it', async () => {
+    const t = await initialized('crz');
+    assert.equal(await t.cli('backup', 'init-key'), 0, t.err.join('\n'));
+    const privateKey = join(t.root, 'keys', 'backup-private.pem');
+    const publicKey = join(t.root, 'keys', 'backup-public.pem');
+    assert.deepEqual(t.out, [privateKey, publicKey]);
+    assert.match(t.err.join('\n'), /Copy the backup private key/);
+    assert.equal(statSync(privateKey).mode & 0o777, 0o600);
+    assert.equal(statSync(publicKey).mode & 0o777, 0o644);
+    assert.equal(statSync(join(t.root, 'keys')).mode & 0o777, 0o700);
+    assert.equal(createPrivateKey(readFileSync(privateKey)).asymmetricKeyDetails.modulusLength, 3072);
+    const before = readFileSync(publicKey);
+    assert.equal(await t.cli('backup', 'init-key'), 1);
+    assert.match(t.err.join('\n'), /already exists/);
+    assert.deepEqual(readFileSync(publicKey), before);
+    assert.doesNotMatch([...t.out, ...t.err].join('\n'), SECRETISH);
+  });
+
+  it('after the private key is moved off the server, backups keep using the same public key', async () => {
+    const t = await initialized('crz');
+    t.state.handler = backupWrites;
+    assert.equal(await t.cli('backup', 'init-key'), 0);
+    const publicKey = join(t.root, 'keys', 'backup-public.pem');
+    const before = readFileSync(publicKey);
+    const away = mkdtempSync(join(tmpdir(), 'lawoss-key-away-'));
+    after(() => rmSync(away, { recursive: true, force: true }));
+    const moved = join(away, 'backup-private.pem');
+    renameSync(join(t.root, 'keys', 'backup-private.pem'), moved);
+    assert.equal(await t.cli('backup'), 0, t.err.join('\n'));
+    const [dir] = t.out;
+    assert.deepEqual(readFileSync(publicKey), before, 'the public key is not regenerated');
+    assert.equal(existsSync(join(t.root, 'keys', 'backup-private.pem')), false, 'no new private key appears');
+    // The host part is sealed to the moved key.
+    t.state.handler = argv => argv.includes('restore') ? { code: 0, stdout: '', stderr: '' } : undefined;
+    assert.equal(await t.cli('restore', '--dry-run', '--private-key', moved, dir), 0, t.err.join('\n'));
+  });
+
+  it('backup refuses a public key that is not RSA 3072 or larger', async () => {
+    const t = await initialized('crz');
+    const { generateKeyPairSync } = await import('node:crypto');
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(join(t.root, 'keys'), { mode: 0o700 });
+    const weak = generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey.export({ type: 'spki', format: 'pem' });
+    writeFileSync(join(t.root, 'keys', 'backup-public.pem'), weak);
+    t.state.handler = backupWrites;
+    assert.equal(await t.cli('backup'), 1);
+    assert.match(t.err.join('\n'), /RSA/);
+    assert.equal(t.calls.length, 0);
   });
 });
 

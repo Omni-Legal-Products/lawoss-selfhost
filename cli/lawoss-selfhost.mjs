@@ -25,7 +25,7 @@ export const USAGE = `Usage: lawoss-selfhost COMMAND
   grant USER SERVICES | revoke USER SERVICES | disable USER | list
   set-key NAME (value from stdin) | unset-key NAME
   doctor
-  backup | restore --dry-run [BACKUP_DIR]
+  backup init-key | backup | restore --dry-run [--private-key PATH] [BACKUP_DIR]
   update --to VERSION --record PATH --record-sha256 HEX | rollback
 Environment: LAWOSS_ROOT (default /opt/lawoss).`;
 
