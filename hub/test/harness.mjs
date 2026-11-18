@@ -59,20 +59,25 @@ export async function startIntrospection() {
     });
     return { issuer, resource: resourceOf(id), sub, tenant: 'firm' };
   };
-  return { issuer, issue, close: () => new Promise(resolve => server.close(resolve)) };
+  // A disabled account: introspection answers inactive, with no subject.
+  const revoke = token => { tokens.set(token, { active: false }); };
+  return { issuer, issue, revoke, close: () => new Promise(resolve => server.close(resolve)) };
 }
 
 /**
- * Fake pool: one in-memory MCP runtime per (principal, service); records every client() and runtime
- * tools/call. `onCall` may throw to simulate a runtime-originated JSON-RPC error.
+ * Fake pool: one in-memory MCP runtime per (principal, service); records every client(), runtime
+ * tools/call and stopPrincipal(). `onCall` may throw (or reject) to simulate a runtime-originated
+ * JSON-RPC error, or wait to simulate a slow runtime.
  */
 export function fakePool({ onCall } = {}) {
   const clientCalls = [];
   const runtimeCalls = [];
+  const stopped = [];
   const clients = new Map();
   return {
     clientCalls,
     runtimeCalls,
+    stopped,
     async client(principal, id) {
       clientCalls.push({ principal, id });
       const key = JSON.stringify([principal, id]);
@@ -81,7 +86,7 @@ export function fakePool({ onCall } = {}) {
         runtime.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: RUNTIME_TOOLS }));
         runtime.setRequestHandler(CallToolRequestSchema, async request => {
           runtimeCalls.push({ principal, id, name: request.params.name, arguments: request.params.arguments });
-          onCall?.(request.params);
+          await onCall?.(request.params);
           return { content: [{ type: 'text', text: `runtime:${request.params.name}` }] };
         });
         const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -92,15 +97,15 @@ export function fakePool({ onCall } = {}) {
       }
       return clients.get(key);
     },
-    async stopPrincipal() {},
+    async stopPrincipal(principal) { stopped.push(principal); },
     async close() {
       for (const client of clients.values()) await client.close();
     },
   };
 }
 
-export async function startHub({ issuer, pool, log, manifest: override = manifest }) {
-  const app = createHub({ base: BASE, issuer, manifest: override, secrets, pool, allowHttpForTests: true, log });
+export async function startHub({ issuer, pool, log, manifest: override = manifest, limits, callTimeoutMs }) {
+  const app = createHub({ base: BASE, issuer, manifest: override, secrets, pool, allowHttpForTests: true, log, limits, callTimeoutMs });
   const server = app.listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
   return { port: server.address().port, close: () => new Promise(resolve => server.close(resolve)) };

@@ -12,6 +12,7 @@ import {
   ListToolsResultSchema,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
+import { DEFAULT_LIMITS, Limits, RetryableError } from './limits.js';
 import type { Manifest, ServiceId, ToolPolicy } from './manifest.js';
 import { DENY_TEXT, checkCall, listedTools, schemaCovers, withoutArgumentsOf } from './policy.js';
 import { createSharedAuth, loadSharedAuthConfig, principalKey, runWithIdentity } from './resource-auth.js';
@@ -32,6 +33,10 @@ export interface HubOptions {
   allowHttpForTests?: boolean;
   /** Receives one JSON line per tools/call; defaults to stdout. */
   log?: (line: string) => void;
+  /** Rate and concurrency limits for tools/call; defaults to DEFAULT_LIMITS. */
+  limits?: Limits;
+  /** Timeout of one runtime tools/call in milliseconds, reset by runtime progress; defaults to 120000. */
+  callTimeoutMs?: number;
 }
 
 interface Service {
@@ -44,6 +49,11 @@ const METADATA_PATHS = ['/.well-known/oauth-protected-resource/mcp', '/.well-kno
 // Tool names absent from the manifest come from the client; they are not written to logs.
 const UNLISTED_TOOL = '(unlisted)';
 const BODY_LIMIT = '1mb';
+export const DEFAULT_CALL_TIMEOUT_MS = 120_000;
+// Bounds the token-hash → principal map used to stop a disabled principal's runtimes.
+const MAX_REMEMBERED_TOKENS = 10_000;
+// The adapter's bearer syntax; other headers never authenticate, so they are never remembered.
+const BEARER = /^Bearer ([A-Za-z0-9\-._~+/]+=*)$/i;
 
 const principalHash = (principal: string): string =>
   createHash('sha256').update(principal).digest('hex').slice(0, 16);
@@ -70,6 +80,7 @@ function createServices(opts: HubOptions): Map<ServiceId, Service> {
 export const INTERNAL_ERROR_TEXT = 'Služba je dočasne nedostupná. Skúste to znova neskôr.';
 export const TIMEOUT_TEXT = 'Služba neodpovedala včas. Skúste to znova.';
 export const INVALID_PARAMS_TEXT = 'Neplatné argumenty nástroja.';
+export const RETRY_TEXT = 'Príliš veľa požiadaviek. Skúste to o chvíľu znova.';
 // Bounds the runtime tools/list pages read to check one allow-without schema.
 const MAX_LIST_PAGES = 20;
 
@@ -84,6 +95,7 @@ class PublicError extends Error {
 }
 
 function publicError(error: unknown): PublicError {
+  if (error instanceof RetryableError) return new PublicError(ErrorCode.InternalError, RETRY_TEXT);
   const code = error instanceof McpError ? error.code : undefined;
   if (code === ErrorCode.RequestTimeout) return new PublicError(ErrorCode.RequestTimeout, TIMEOUT_TEXT);
   if (code === ErrorCode.InvalidParams) return new PublicError(ErrorCode.InvalidParams, INVALID_PARAMS_TEXT);
@@ -103,8 +115,15 @@ async function runtimeTool(client: Client, name: string, signal: AbortSignal) {
   return undefined;
 }
 
+interface Proxy {
+  pool: RuntimePool;
+  limits: Limits;
+  callTimeoutMs: number;
+  log: (line: string) => void;
+}
+
 /** One MCP server per request, proxying tools/list and tools/call to the principal's runtime under the policy. */
-function createMcpServer(service: Service, principal: string, pool: RuntimePool, log: (line: string) => void): Server {
+function createMcpServer(service: Service, principal: string, { pool, limits, callTimeoutMs, log }: Proxy): Server {
   const server = new Server({ name: `lawoss-${service.id}`, version: '0.1.0' }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async (request, extra) => {
     try {
@@ -135,30 +154,71 @@ function createMcpServer(service: Service, principal: string, pool: RuntimePool,
     const decision = checkCall(service.tools, name, args);
     if (!decision.allowed) return refuse(decision.text);
     try {
-      const client = await pool.client(principal, service.id);
-      const without = withoutArgumentsOf(service.tools, name);
-      if (without.length > 0) {
-        // Fail closed when the manifest names an argument the runtime schema does not have.
-        const tool = await runtimeTool(client, name, extra.signal);
-        if (!tool || !schemaCovers(tool, without)) return refuse(DENY_TEXT);
-      }
-      // Only name and arguments are forwarded; client _meta (for example progress tokens) stays here.
-      const result = await client.request({ method: 'tools/call', params: { name, arguments: args } },
-        CallToolResultSchema, { signal: extra.signal });
-      write(result.isError ? 'tool-error' : 'ok');
-      return result;
+      return await limits.run(principal, service.id, async () => {
+        const client = await pool.client(principal, service.id);
+        const without = withoutArgumentsOf(service.tools, name);
+        if (without.length > 0) {
+          // Fail closed when the manifest names an argument the runtime schema does not have.
+          const tool = await runtimeTool(client, name, extra.signal);
+          if (!tool || !schemaCovers(tool, without)) return refuse(DENY_TEXT);
+        }
+        // Only name and arguments are forwarded; client _meta (for example progress tokens) stays here.
+        // The hub's own progress handler lets runtime progress reset the timeout.
+        const result = await client.request({ method: 'tools/call', params: { name, arguments: args } },
+          CallToolResultSchema, { signal: extra.signal, timeout: callTimeoutMs, resetTimeoutOnProgress: true, onprogress: () => {} });
+        write(result.isError ? 'tool-error' : 'ok');
+        return result;
+      });
     } catch (error) {
-      write('failed');
+      write(error instanceof RetryableError ? 'limited' : 'failed');
       throw publicError(error);
     }
   });
   return server;
 }
 
+/**
+ * Remembers which principal each accepted token (per service, by hash) belonged to. Introspection of a
+ * disabled account answers only "inactive", without a subject, so a known token that turns inactive
+ * before its expiry is the signal to stop that principal's runtimes.
+ */
+function rememberedTokens(pool: RuntimePool) {
+  const known = new Map<string, { principal: string; exp: number }>();
+  const keyOf = (id: ServiceId, authorization: string | undefined): string | undefined => {
+    const token = typeof authorization === 'string' ? BEARER.exec(authorization)?.[1] : undefined;
+    return token === undefined ? undefined : createHash('sha256').update(`${id}\0${token}`).digest('hex');
+  };
+  const live = (exp: number) => exp > Date.now() / 1000;
+  return {
+    accepted(id: ServiceId, authorization: string | undefined, identity: VerifiedIdentity): void {
+      const key = keyOf(id, authorization);
+      if (key === undefined) return;
+      known.delete(key);
+      if (known.size >= MAX_REMEMBERED_TOKENS)
+        for (const [old, entry] of known) if (!live(entry.exp)) known.delete(old);
+      // Still full: forget the oldest entry (Map keeps insertion order).
+      if (known.size >= MAX_REMEMBERED_TOKENS) known.delete(known.keys().next().value as string);
+      known.set(key, { principal: principalKey(identity), exp: identity.exp });
+    },
+    rejected(id: ServiceId, authorization: string | undefined): void {
+      const key = keyOf(id, authorization);
+      const entry = key === undefined ? undefined : known.get(key);
+      if (!entry) return;
+      known.delete(key as string);
+      // An expired token is ordinary refresh, not a disabled account.
+      if (live(entry.exp)) pool.stopPrincipal(entry.principal).catch(() => {});
+    },
+  };
+}
+
 export function createHub(opts: HubOptions): express.Express {
   const services = createServices(opts);
   const ids = new Set(services.keys());
   const log = opts.log ?? ((line: string) => { process.stdout.write(`${line}\n`); });
+  const callTimeoutMs = opts.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
+  if (!Number.isSafeInteger(callTimeoutMs) || callTimeoutMs < 1) throw new Error('callTimeoutMs must be a positive integer');
+  const proxy: Proxy = { pool: opts.pool, limits: opts.limits ?? new Limits(DEFAULT_LIMITS), callTimeoutMs, log };
+  const tokens = rememberedTokens(opts.pool);
   const app = express();
   app.disable('x-powered-by');
 
@@ -180,6 +240,7 @@ export function createHub(opts: HubOptions): express.Express {
     const service = res.locals.service as Service;
     const identity = await service.auth.authenticate(req);
     if (!identity) {
+      tokens.rejected(service.id, req.headers.authorization);
       res.status(401).set('WWW-Authenticate', service.auth.challenge).end();
       return;
     }
@@ -188,13 +249,14 @@ export function createHub(opts: HubOptions): express.Express {
       res.status(405).set('Allow', 'POST').end();
       return;
     }
+    tokens.accepted(service.id, req.headers.authorization, identity);
     res.locals.identity = identity;
     next();
   }, express.json({ limit: BODY_LIMIT }), async (req: Request, res: Response) => {
     const service = res.locals.service as Service;
     const identity = res.locals.identity as VerifiedIdentity;
     await runWithIdentity(identity, async () => {
-      const server = createMcpServer(service, principalKey(identity), opts.pool, log);
+      const server = createMcpServer(service, principalKey(identity), proxy);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
       res.on('close', () => {
         void transport.close();

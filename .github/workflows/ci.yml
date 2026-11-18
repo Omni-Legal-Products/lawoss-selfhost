@@ -45,12 +45,25 @@ jobs:
         run: |
           npm ci --ignore-scripts
           npm test
-      - name: Fetch verified runtimes and cross-check tools
+      - name: Fetch verified runtimes
         run: |
           COMMIT=$(node -p "require('./hub/services.json').catalogCommit")
           node hub/scripts/fetch-runtimes.mjs --catalog catalog --catalog-commit "$COMMIT" --out "$RUNNER_TEMP/runtimes"
-          cd hub
+      # The image build does this once; the only step that may use npm and the network for dependencies.
+      - name: Warm the shared runtime cache
+        run: |
+          LAWOSS_CACHE_DIR="$RUNNER_TEMP/lawoss-cache" LAWOSS_STATE_DIR="$RUNNER_TEMP/warm-state" \
+            node "$RUNNER_TEMP/runtimes/crz/scripts/run.mjs" tools > /dev/null
+      - name: Cross-check runtime tools
+        working-directory: hub
+        run: |
           LAWOSS_RUNTIMES_DIR="$RUNNER_TEMP/runtimes" LAWOSS_CACHE_DIR="$RUNNER_TEMP/lawoss-cache" node --test test/manifest.test.mjs
+      - name: Pooled runtime starts without npm or network from the read-only cache
+        working-directory: hub
+        run: |
+          chmod -R a-w "$RUNNER_TEMP/lawoss-cache"
+          trap 'chmod -R u+w "$RUNNER_TEMP/lawoss-cache"' EXIT
+          LAWOSS_RUNTIMES_DIR="$RUNNER_TEMP/runtimes" LAWOSS_CACHE_DIR="$RUNNER_TEMP/lawoss-cache" node --test test/pool.test.mjs
   agents-mirror:
     runs-on: ubuntu-latest
     steps:
