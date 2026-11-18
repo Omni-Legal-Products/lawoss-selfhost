@@ -3,12 +3,12 @@ import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { readEnvFile, validateRecord } from '../lib.mjs';
-import { RECORD, SECRETISH, composeBase, healthyProbes, initialized, sha256 } from './helpers.mjs';
+import { RECORD, SECRETISH, composeBase, healthyProbes, initialized, sha256, writeRecord } from './helpers.mjs';
 
 const digest = hex => hex.repeat(64);
-// A second release, written at test time; its digests are obvious placeholders.
+// A second release for the host files installed under root; its image digests are obvious placeholders.
 function nextRecord(root, mutate = record => record) {
-  const record = mutate({
+  const base = writeRecord(root, {
     version: '0.0.1',
     commit: '1'.repeat(40),
     images: {
@@ -16,11 +16,10 @@ function nextRecord(root, mutate = record => record) {
       hub: `lawoss-hub@sha256:${digest('1')}`,
       proxy: `caddy@sha256:${digest('1')}`,
     },
-    note: 'Placeholder release for tests.',
   });
-  const path = join(root, 'record-0.0.1.json');
-  writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`);
-  return { path, sha: sha256(readFileSync(path)) };
+  const record = mutate(base.record);
+  writeFileSync(base.path, `${JSON.stringify(record, null, 2)}\n`);
+  return { path: base.path, sha: sha256(readFileSync(base.path)) };
 }
 
 const isSnapshot = argv => argv[0] === 'docker' && argv[1] === 'run';
@@ -34,6 +33,15 @@ describe('release records', () => {
     assert.throws(() => validateRecord({ ...record, images: { ...record.images, hub: 'lawoss-hub:latest' } }, '0.0.0'), /digest/);
     assert.throws(() => validateRecord({ ...record, commit: 'main' }, '0.0.0'), /commit/);
     assert.throws(() => validateRecord({ ...record, extra: 1 }, '0.0.0'), /unknown field/);
+    assert.deepEqual(Object.keys(record.files).sort(),
+      ['Caddyfile.template', 'bin/lawoss-selfhost.mjs', 'bin/lib.mjs', 'compose.yaml', 'services.json']);
+    const { files } = record;
+    assert.throws(() => validateRecord({ ...record, files: undefined }, '0.0.0'), /files/);
+    const without = { ...files };
+    delete without['services.json'];
+    assert.throws(() => validateRecord({ ...record, files: without }, '0.0.0'), /services\.json/);
+    assert.throws(() => validateRecord({ ...record, files: { ...files, '../etc/passwd': '0'.repeat(64) } }, '0.0.0'), /host file/);
+    assert.throws(() => validateRecord({ ...record, files: { ...files, 'compose.yaml': 'abc' } }, '0.0.0'), /sha256/);
   });
 });
 
@@ -122,6 +130,33 @@ describe('update and rollback', () => {
     assert.equal(ups, 2);
     assert.deepEqual(readFileSync(join(t.root, '.env')), before);
     assert.match(t.err.join('\n'), /rolled back to 0\.0\.0/);
+  });
+
+  it('update refuses until the release\'s host files are installed', async () => {
+    const t = await initialized('crz');
+    const env = readFileSync(join(t.root, '.env'));
+    const { path, sha } = nextRecord(t.root);
+    // The record was made for the files as they were; one changes, one appears.
+    writeFileSync(join(t.root, 'compose.yaml'), `${readFileSync(join(t.root, 'compose.yaml'), 'utf8')}# local edit\n`);
+    writeFileSync(join(t.root, 'bin', 'commands', 'extra.mjs'), '// not in the release\n');
+    assert.equal(await t.cli('update', '--to', '0.0.1', '--record', path, '--record-sha256', sha), 1);
+    const message = t.err.join('\n');
+    assert.match(message, /host files of release 0\.0\.1 must be installed first/);
+    assert.match(message, /compose\.yaml/);
+    assert.match(message, /bin\/commands\/extra\.mjs/);
+    assert.equal(t.calls.length, 0);
+    assert.deepEqual(readFileSync(join(t.root, '.env')), env);
+  });
+
+  it('rollback reports a failed check without switching back again', async () => {
+    const t = await initialized('crz');
+    const { path, sha } = nextRecord(t.root);
+    assert.equal(await t.cli('update', '--to', '0.0.1', '--record', path, '--record-sha256', sha), 0);
+    t.state.probes = { ...healthyProbes('example.com'), async fetch() { return { status: 502, headers: new Headers(), json: async () => ({}) }; } };
+    assert.equal(await t.cli('rollback'), 1);
+    assert.equal(t.calls.filter(isUp).length, 1, 'no automatic second switch');
+    assert.equal(readEnvFile(join(t.root, '.env')).LAWOSS_RELEASE, '0.0.0', '.env names the release rolled back to');
+    assert.ok(t.out.includes('FAIL rollback 0.0.0'));
   });
 
   it('rollback returns to the previous release images and keeps the current secrets', async () => {

@@ -39,6 +39,17 @@ describe('account commands', () => {
     assert.deepEqual(t.out, ['alice active crz']);
   });
 
+  it('list escapes characters that are not printable in user names', async () => {
+    const t = await initialized('crz');
+    t.state.handler = () => ({ code: 0, stderr: '', stdout: JSON.stringify([
+      { username: 'eve\u001b[2Jx', status: 'active', resources: {} },
+      { username: 'bob\u202esuffix', status: 'pending', resources: { 'https://crz.example.com/mcp': 'bob' } },
+    ]) });
+    assert.equal(await t.cli('list'), 0);
+    assert.deepEqual(t.out, ['eve\\u001b[2Jx active -', 'bob\\u202esuffix pending crz']);
+    for (const line of t.out) assert.doesNotMatch(line, /[\u0000-\u001f\u007f-\u009f\u202e]/);
+  });
+
   it('invite USER orsr,crz runs invite for orsr with tenant USER, then grant-resource for crz with tenant USER', async () => {
     const t = await initialized('crz,orsr');
     t.state.handler = inviteWrites('a'.repeat(43));

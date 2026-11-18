@@ -1,13 +1,16 @@
 // update --to VERSION --record PATH --record-sha256 HEX: accepts only a release record whose bytes
-// hash to the value pinned in the catalog, shows its note and the image change, snapshots the
+// hash to the value pinned in the catalog and whose host files (compose.yaml, services.json,
+// Caddyfile.template, the CLI in bin/) are installed under <root> already, verifies the images'
+// build attestations, shows its note and the image change, snapshots the
 // volumes, switches the image variables in .env atomically, starts the stack and runs doctor. If
 // the start or doctor fails, the previous .env is restored and the stack started again.
-// rollback: the same switch back to the images saved in .env.previous by the last update.
+// rollback: the same switch back to the images saved in .env.previous by the last update, once the
+// previous release's host files are installed again; a failed check is reported, not reverted.
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   Failure, PROJECT, UsageError, VOLUMES, compose, deployment, options, paths, printable, readEnvFile, readRecord, requireImage,
-  setEnvVars, stamp, verifyAttestations, writePrivateFile,
+  keepRecord, keptRecord, setEnvVars, stamp, verifyAttestations, verifyHostFiles, writePrivateFile,
 } from '../lib.mjs';
 import { runDoctor } from './doctor.mjs';
 
@@ -49,8 +52,12 @@ async function startAndCheck(ctx) {
   }
 }
 
-/** Switches .env to `target` (release and images), starts and checks; restores everything on failure. */
-async function switchRelease(ctx, target) {
+/**
+ * Switches .env to `target` (release and images), starts and checks. With `revert`, a failure
+ * restores the previous .env and starts again (update); without it, the failure is reported and the
+ * operator decides (rollback, which is itself the way back).
+ */
+async function switchRelease(ctx, target, { revert }) {
   const p = paths(ctx.root);
   const current = deployment(ctx.root);
   const snapshot = await snapshotVolumes(ctx, requireImage(current.images.auth, 'current auth'));
@@ -69,6 +76,11 @@ async function switchRelease(ctx, target) {
     ctx.out(`switched to ${target.version}`);
     return 0;
   }
+  if (!revert) {
+    ctx.out(`FAIL rollback ${target.version}`);
+    ctx.err(`lawoss-selfhost: ${failed} failed after rolling back; .env names ${target.version}; fix the cause, then run doctor`);
+    return 1;
+  }
   writePrivateFile(ctx, p.env, before);
   if (previousBefore === undefined) rmSync(p.envPrevious, { force: true });
   else writePrivateFile(ctx, p.envPrevious, previousBefore);
@@ -83,11 +95,14 @@ export async function update(args, ctx) {
   if (!values.to || !values.record || !values['record-sha256']) throw new UsageError('--to, --record and --record-sha256 are required');
   const record = readRecord(values.record, values['record-sha256'], values.to);
   const current = deployment(ctx.root);
+  verifyHostFiles(ctx.root, record);
   await verifyAttestations(ctx, record.images);
   ctx.out(`release ${current.release} -> ${record.version}`);
   for (const name of Object.keys(IMAGE_VARS)) ctx.out(`${name} ${current.images[name] ?? '(none)'} -> ${record.images[name]}`);
   for (const line of printable(record.note).split('\n')) ctx.out(`note: ${line}`);
-  return switchRelease(ctx, { version: record.version, images: record.images });
+  const code = await switchRelease(ctx, { version: record.version, images: record.images }, { revert: true });
+  if (code === 0) keepRecord(ctx, record);
+  return code;
 }
 
 export async function rollback(args, ctx) {
@@ -99,5 +114,7 @@ export async function rollback(args, ctx) {
   const images = Object.fromEntries(Object.entries(IMAGE_VARS).map(([name, key]) => [name, requireImage(previous[key], `previous ${name}`)]));
   const version = previous.LAWOSS_RELEASE;
   if (!version || !/^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/.test(version)) throw new Failure('.env.previous has no valid LAWOSS_RELEASE');
-  return switchRelease(ctx, { version, images });
+  // The previous release's compose.yaml, manifest and CLI must be back in place as well.
+  verifyHostFiles(ctx.root, keptRecord(ctx.root, version));
+  return switchRelease(ctx, { version, images }, { revert: false });
 }

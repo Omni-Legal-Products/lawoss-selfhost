@@ -19,6 +19,7 @@ DEPLOY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 COMPOSE = os.path.join(DEPLOY, "compose.yaml")
 ENV_EXAMPLE = os.path.join(DEPLOY, ".env.example")
 CADDYFILE = os.path.join(DEPLOY, "Caddyfile.template")
+MANIFEST = os.path.join(os.path.dirname(DEPLOY), "hub", "services.json")
 
 ZERO_DIGEST = "0" * 64
 DIGEST_IMAGE = re.compile(r"^[a-z0-9][a-z0-9._/:-]*@sha256:[0-9a-f]{64}$")
@@ -160,6 +161,18 @@ class ComposeTest(unittest.TestCase):
         self.assertIs(brand.get("read_only"), True)
         self.assertIs(brand.get("bind", {}).get("create_host_path"), False)
         self.assertEqual([m for m in self.services["hub"].get("volumes", []) if m.get("type") == "bind"], [])
+
+    def test_hub_receives_exactly_the_allowlisted_provider_keys(self):
+        with open(MANIFEST, encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        allowlisted = {name for service in manifest["services"].values() for name in service.get("env", [])}
+        environment = self.services["hub"]["environment"]
+        self.assertEqual(set(environment), allowlisted | {"HUB_CONFIG_JSON", "PORT"})
+        for name in allowlisted:
+            self.assertEqual(environment[name], "${%s:-}" % name, name)
+        self.assertTrue(allowlisted.isdisjoint(self.services["auth"].get("environment", {})))
+        for name, service in self.services.items():
+            self.assertNotIn("env_file", service, name)
 
     def test_proxy_carries_the_auth_host_alias_on_the_internal_network(self):
         networks = self.compose["networks"]

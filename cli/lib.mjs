@@ -1,7 +1,9 @@
 // Shared helpers of the host-side CLI. Every message written by these helpers is a fixed string or
 // names a path, host, service or field; values read from .env or produced by containers never are.
 import { createHash, randomBytes } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs';
+import {
+  chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
 
@@ -154,6 +156,12 @@ export function loadManifest(root) {
   return manifest;
 }
 
+/** Every provider variable some manifest entry allowlists, sorted; the only names set-key accepts. */
+export function providerKeys(manifest) {
+  return [...new Set(Object.values(manifest.services ?? {}).flatMap(service => Array.isArray(service?.env) ? service.env : []))]
+    .filter(name => /^[A-Z][A-Z0-9_]{0,63}$/.test(name)).sort();
+}
+
 /** A comma-separated service list: distinct ids, each in `allowed`. */
 export function parseServiceList(list, allowed) {
   const ids = String(list ?? '').split(',').map(id => id.trim());
@@ -190,8 +198,14 @@ export function requireImage(ref, name) {
 // ---------------------------------------------------------------------------------------------
 // Release records: releases/<version>.json, pinned by its SHA-256 in a reviewed catalog commit.
 
-const RECORD_FIELDS = new Set(['version', 'commit', 'images', 'note']);
+const RECORD_FIELDS = new Set(['version', 'commit', 'images', 'files', 'note']);
 const IMAGE_FIELDS = ['auth', 'hub', 'proxy'];
+/**
+ * Host files a release installs under <root> from its commit: the deployment files and the CLI in
+ * bin/. A record lists each with its SHA-256; these must always be among them.
+ */
+export const REQUIRED_HOST_FILES = ['compose.yaml', 'services.json', 'Caddyfile.template', 'bin/lawoss-selfhost.mjs', 'bin/lib.mjs'];
+const HOST_FILE = /^(?:compose\.yaml|services\.json|Caddyfile\.template|bin\/package\.json|bin\/(?:commands\/)?[a-z0-9-]{1,64}\.mjs)$/;
 
 export function validateRecord(record, version) {
   if (record === null || typeof record !== 'object' || Array.isArray(record)) throw new Failure('release record must be a JSON object');
@@ -204,8 +218,69 @@ export function validateRecord(record, version) {
     throw new Failure('release record images must name exactly auth, hub and proxy');
   for (const name of IMAGE_FIELDS)
     if (typeof images[name] !== 'string' || !IMAGE.test(images[name])) throw new Failure(`release record ${name} image is not pinned by digest`);
+  const files = record.files;
+  if (files === null || typeof files !== 'object' || Array.isArray(files)) throw new Failure('release record files must map host files to their sha256');
+  for (const [path, digest] of Object.entries(files)) {
+    if (!HOST_FILE.test(path)) throw new Failure('release record names a host file outside the installed set');
+    if (typeof digest !== 'string' || !SHA256.test(digest)) throw new Failure(`release record sha256 of ${path} is invalid`);
+  }
+  for (const path of REQUIRED_HOST_FILES)
+    if (!Object.hasOwn(files, path)) throw new Failure(`release record files must include ${path}`);
   if (typeof record.note !== 'string' || record.note.length > 4000) throw new Failure('release record note must be text');
   return record;
+}
+
+/** The host files under <root> that a record must cover: the fixed files and everything in bin/. */
+function installedHostFiles(root) {
+  const found = [];
+  const walk = relative => {
+    const dir = join(root, relative);
+    if (!existsSync(dir)) return;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = `${relative}/${entry.name}`;
+      if (entry.isDirectory()) walk(path);
+      else found.push(path);
+    }
+  };
+  walk('bin');
+  return found;
+}
+
+/**
+ * Refuses a release until its host files are installed: every file the record lists must exist
+ * under <root> as a regular file with the recorded SHA-256, and bin/ must hold nothing else.
+ * Nothing is downloaded; the skill installs the files from the record's commit.
+ */
+export function verifyHostFiles(root, record) {
+  const wrong = [];
+  for (const [path, digest] of Object.entries(record.files)) {
+    const full = join(root, path);
+    const info = lstatSync(full, { throwIfNoEntry: false });
+    if (!info?.isFile() || sha256(readFileSync(full)) !== digest) wrong.push(path);
+  }
+  for (const path of installedHostFiles(root)) if (!Object.hasOwn(record.files, path)) wrong.push(path);
+  if (wrong.length)
+    throw new Failure(`host files of release ${record.version} must be installed first: ${wrong.sort().join(', ')} differ from its record`);
+}
+
+/** Keeps the accepted record (no secret) as <root>/releases/<version>.json, for rollback. */
+export function keepRecord(ctx, record) {
+  const dir = join(ctx.root, 'releases');
+  mkdirSync(dir, { recursive: true });
+  chmodSync(dir, 0o755);
+  const path = join(dir, `${record.version}.json`);
+  writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`);
+  chmodSync(path, 0o644);
+  ctx.chown(path, 0, 0);
+}
+
+/** A record kept by keepRecord, re-validated. */
+export function keptRecord(root, version) {
+  const path = join(root, 'releases', `${version}.json`);
+  if (!VERSION.test(version ?? '') || !existsSync(path)) throw new Failure(`the record of release ${version} is not kept in ${join(root, 'releases')}`);
+  let record;
+  try { record = JSON.parse(readFileSync(path, 'utf8')); } catch { throw new Failure(`${path} is not valid JSON`); }
+  return validateRecord(record, version);
 }
 
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/;
@@ -233,7 +308,8 @@ export const stamp = date => date.toISOString().replace(/[:.]/g, '-');
 // them whenever gh is installed. The proxy is the official Caddy image, which carries no such
 // attestation, so it is trusted through its pinned digest alone.
 
-export const ATTESTATION_OWNER = 'Omni-Legal-Products';
+/** gh accepts --owner or --repo, not both; the repository is the narrower binding. */
+export const ATTESTATION_REPO = 'Omni-Legal-Products/lawoss-selfhost';
 export const ATTESTED_IMAGES = ['auth', 'hub'];
 
 /** Refuses the release when an attestation does not verify; without gh, prints one notice. */
@@ -243,8 +319,11 @@ export async function verifyAttestations(ctx, images) {
     return;
   }
   for (const name of ATTESTED_IMAGES) {
-    const result = await ctx.run(['gh', 'attestation', 'verify', `oci://${images[name]}`, '--owner', ATTESTATION_OWNER]);
-    if (result.code !== 0) throw new Failure(`build attestation of the ${name} image did not verify; refusing the release`);
+    const result = await ctx.run(['gh', 'attestation', 'verify', `oci://${images[name]}`, '--repo', ATTESTATION_REPO]);
+    if (result.code !== 0) {
+      ctx.err('hint: gh must be logged in as root to verify attestations (sudo gh auth login, or GH_TOKEN for root)');
+      throw new Failure(`build attestation of the ${name} image did not verify; refusing the release`);
+    }
     ctx.err(`PASS attestation ${name}`);
   }
 }

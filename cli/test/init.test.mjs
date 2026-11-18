@@ -4,7 +4,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { readEnvFile } from '../lib.mjs';
-import { RECORD, RECORD_SHA, SECRETISH, initialized, setup } from './helpers.mjs';
+import { SECRETISH, initialized, setup } from './helpers.mjs';
 
 describe('init', () => {
   it('init writes .env with mode 0600 and prints only hostnames', async () => {
@@ -60,7 +60,7 @@ describe('init', () => {
   it('init refuses to overwrite an existing .env', async () => {
     const t = setup();
     writeFileSync(join(t.root, '.env'), 'EXISTING=1\n', { mode: 0o600 });
-    const code = await t.cli('init', '--base', 'example.com', '--services', 'crz', '--record', RECORD, '--record-sha256', RECORD_SHA);
+    const code = await t.cli('init', '--base', 'example.com', '--services', 'crz', '--record', t.record, '--record-sha256', t.recordSha);
     assert.equal(code, 1);
     assert.equal(readFileSync(join(t.root, '.env'), 'utf8'), 'EXISTING=1\n');
     assert.match(t.err.join('\n'), /already exists/);
@@ -68,7 +68,7 @@ describe('init', () => {
 
   it('rejects unknown services, an invalid base and a missing record with a usage error', async () => {
     const t = setup();
-    const args = ['--record', RECORD, '--record-sha256', RECORD_SHA];
+    const args = ['--record', t.record, '--record-sha256', t.recordSha];
     assert.equal(await t.cli('init', '--base', 'example.com', '--services', 'crz,nope', ...args), 2);
     assert.equal(await t.cli('init', '--base', 'Example..com', '--services', 'crz', ...args), 2);
     assert.equal(await t.cli('init', '--base', 'example.com', '--services', 'crz'), 2);
@@ -77,15 +77,23 @@ describe('init', () => {
 
   it('refuses a release record that does not hash to the pinned value and writes nothing', async () => {
     const t = setup();
-    assert.equal(await t.cli('init', '--base', 'example.com', '--services', 'crz', '--record', RECORD, '--record-sha256', '0'.repeat(64)), 1);
+    assert.equal(await t.cli('init', '--base', 'example.com', '--services', 'crz', '--record', t.record, '--record-sha256', '0'.repeat(64)), 1);
     assert.match(t.err.join('\n'), /does not match/);
+    assert.equal(existsSync(join(t.root, '.env')), false);
+  });
+
+  it('refuses until the release\'s host files are installed', async () => {
+    const t = setup();
+    writeFileSync(join(t.root, 'services.json'), '{}\n');
+    assert.equal(await t.cli('init', '--base', 'example.com', '--services', 'crz', '--record', t.record, '--record-sha256', t.recordSha), 1);
+    assert.match(t.err.join('\n'), /host files of release 0\.0\.0 must be installed first: services\.json/);
     assert.equal(existsSync(join(t.root, '.env')), false);
   });
 
   it('records a built-in brand pack as a path inside the auth image', async () => {
     const t = setup();
     assert.equal(await t.cli('init', '--base', 'example.com', '--services', 'crz', '--brand', 'lawoss',
-      '--record', RECORD, '--record-sha256', RECORD_SHA), 0);
+      '--record', t.record, '--record-sha256', t.recordSha), 0);
     assert.equal(JSON.parse(readEnvFile(join(t.root, '.env')).AUTH_CONFIG_JSON).brand, 'brand/lawoss');
   });
 });

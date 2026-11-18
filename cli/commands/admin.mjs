@@ -46,6 +46,10 @@ export async function disable(args, ctx) {
   return 0;
 }
 
+/** A name with control, format and whitespace characters escaped as \\uXXXX, so it cannot move the terminal. */
+export const printableName = name =>
+  name.replace(/[\p{C}\s\\]/gu, char => `\\u${char.codePointAt(0).toString(16).padStart(4, '0')}`);
+
 /** Prints one line per account: name, status and the enabled services it is granted. */
 export async function list(args, ctx) {
   options(args, {});
@@ -58,9 +62,9 @@ export async function list(args, ctx) {
   for (const row of rows) {
     const name = typeof row?.username === 'string' ? row.username : '';
     const status = typeof row?.status === 'string' ? row.status : '';
-    if (!/^[^\s]{1,254}$/.test(name) || !/^[a-z]{1,16}$/.test(status)) throw new Failure('list returned an unexpected row');
+    if (name.length < 1 || name.length > 254 || !/^[a-z]{1,16}$/.test(status)) throw new Failure('list returned an unexpected row');
     const granted = Object.keys(row.resources ?? {}).map(url => byUrl.get(url)).filter(Boolean).sort();
-    ctx.out(`${name} ${status} ${granted.join(',') || '-'}`);
+    ctx.out(`${printableName(name)} ${status} ${granted.join(',') || '-'}`);
   }
   return 0;
 }

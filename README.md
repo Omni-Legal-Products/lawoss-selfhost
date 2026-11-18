@@ -59,25 +59,33 @@ docker compose -f deploy/compose.yaml --env-file deploy/.env.example config -q
 
 ## Setup CLI
 
-`cli/lawoss-selfhost.mjs` (Node standard library only) is installed to `/opt/lawoss/bin` next to
-`compose.yaml`, `Caddyfile.template` and `services.json` in `/opt/lawoss`, and run with `sudo`.
-It generates every secret on the server into `/opt/lawoss/.env` (0600, root) and never prints a
-secret, key, activation link or password: its outputs are host names, `PASS`/`FAIL` lines and
-paths of 0600 files. Account, backup and snapshot work runs in one-off containers; no container
-gets the Docker socket.
+`cli/lawoss-selfhost.mjs` (Node standard library only) is installed with `cli/lib.mjs` and
+`cli/commands/` to `/opt/lawoss/bin`, next to `compose.yaml`, `Caddyfile.template` and
+`services.json` in `/opt/lawoss`, all from the release's commit, and run with `sudo`. It generates
+every secret on the server into `/opt/lawoss/.env` (0600, root) and never prints a secret, key,
+activation link or password: its outputs are host names, `PASS`/`FAIL` lines and paths of 0600
+files. Account, backup and snapshot work runs in one-off containers; no container gets the Docker
+socket.
 
 ```sh
 lawoss-selfhost init --base example.com --services crz,orsr --record releases/VERSION.json --record-sha256 HEX
 lawoss-selfhost invite alice crz,orsr      # prints /opt/lawoss/handoff/alice.link
+lawoss-selfhost set-key FS_API_KEY         # the value is read from stdin, without echo
 lawoss-selfhost doctor
 lawoss-selfhost update --to VERSION --record releases/VERSION.json --record-sha256 HEX
 ```
 
-`init` and `update` accept a release only when its record hashes to the value pinned in the
-catalog; when `gh` is installed they also run `gh attestation verify` for the auth and hub images
-and refuse on failure. A custom brand pack (`init --brand /path/to/pack`, `brand check`,
-`brand preview`) is copied to `/opt/lawoss/brand/<name>`, which auth mounts read-only at
-`/brand`; without `--brand` the built-in LAWOSS pack applies.
+A release record (`releases/<version>.json`) names the commit, the image digests and the SHA-256 of
+every host file. `init` and `update` accept it only when its bytes hash to the value pinned in the
+catalog and the host files under `/opt/lawoss` match it (they are installed from the commit first;
+the CLI downloads nothing); when `gh` is installed they also run `gh attestation verify` for the
+auth and hub images and refuse on failure.
+
+Brand packs: `brand check PACK` and `brand preview PACK` validate or preview a pack directory (or
+a built-in pack name) without installing it; before `init` they take `--record` for the auth image.
+`brand set PACK` (or `init --brand PACK`) validates the pack with auth's own loader, copies
+`brand.json` and the files it declares to `/opt/lawoss/brand/<name>`, which auth mounts read-only at
+`/brand`, and points auth at it. Without a pack the built-in LAWOSS pack applies.
 
 `lawoss-selfhost` without arguments lists every command. Tests: `cd cli && npm test`.
 

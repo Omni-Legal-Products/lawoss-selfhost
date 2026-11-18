@@ -16,18 +16,22 @@ import { grant, revoke, disable, list } from './commands/admin.mjs';
 import { doctor, realProbes } from './commands/doctor.mjs';
 import { backup, restore } from './commands/backup.mjs';
 import { update, rollback } from './commands/update.mjs';
+import { setKey, unsetKey } from './commands/keys.mjs';
 
 export const USAGE = `Usage: lawoss-selfhost COMMAND
   init --base BASE --services LIST [--brand PACK] --record PATH --record-sha256 HEX
-  brand check PACK | brand preview PACK
+  brand check PACK [--record PATH --record-sha256 HEX] | brand preview PACK [...] | brand set PACK
   invite USER SERVICES
   grant USER SERVICES | revoke USER SERVICES | disable USER | list
+  set-key NAME (value from stdin) | unset-key NAME
   doctor
   backup | restore --dry-run [BACKUP_DIR]
   update --to VERSION --record PATH --record-sha256 HEX | rollback
 Environment: LAWOSS_ROOT (default /opt/lawoss).`;
 
-const COMMANDS = { init, brand, invite, grant, revoke, disable, list, doctor, backup, restore, update, rollback };
+const COMMANDS = {
+  init, brand, invite, grant, revoke, disable, list, 'set-key': setKey, 'unset-key': unsetKey, doctor, backup, restore, update, rollback,
+};
 
 /** Runs one command with an injected context; returns the exit code. */
 export async function main(argv, ctx) {
@@ -88,12 +92,50 @@ export function onPath(name, path = process.env.PATH ?? '') {
   });
 }
 
+/**
+ * Reads one secret value: from a terminal without echo (Enter ends it, Ctrl-C aborts), otherwise all
+ * of stdin without its final newline.
+ */
+export function readSecret(prompt, { stdin = process.stdin, stderr = process.stderr } = {}) {
+  if (!stdin.isTTY) {
+    return new Promise((resolve, reject) => {
+      const chunks = [];
+      stdin.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      stdin.on('end', () => resolve(Buffer.concat(chunks).toString('utf8').replace(/\r?\n$/, '')));
+      stdin.on('error', reject);
+    });
+  }
+  stderr.write(prompt);
+  return new Promise((resolve, reject) => {
+    let value = '';
+    const finish = error => {
+      stdin.off('data', onData);
+      stdin.setRawMode(false);
+      stdin.pause();
+      stderr.write('\n');
+      if (error) reject(error); else resolve(value);
+    };
+    const onData = chunk => {
+      for (const char of chunk.toString('utf8')) {
+        if (char === '\r' || char === '\n') return finish();
+        if (char === '\u0003') return finish(new Failure('cancelled; nothing changed'));
+        if (char === '\u007f' || char === '\b') value = value.slice(0, -1);
+        else value += char;
+      }
+    };
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.on('data', onData);
+  });
+}
+
 function realContext() {
   return {
     root: process.env.LAWOSS_ROOT || '/opt/lawoss',
     run: spawnRunner,
     chown: (path, uid, gid) => chownSync(path, uid, gid),
     which: name => onPath(name),
+    readSecret: prompt => readSecret(prompt),
     out: line => process.stdout.write(`${line}\n`),
     err: line => process.stderr.write(`${line}\n`),
     probes: realProbes(),
