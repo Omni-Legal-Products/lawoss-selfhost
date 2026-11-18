@@ -95,6 +95,9 @@ describe('hub limits and timeouts', () => {
       assert.equal(second.message.error.message, RETRY_TEXT);
       assert.equal(RETRY_TEXT, 'Príliš veľa požiadaviek. Skúste to o chvíľu znova.');
       assert.equal(pool.runtimeCalls.length, 1);
+      // The hub holds a lease on the runtime for the whole call, and releases it.
+      assert.equal(pool.leaseCalls, 1);
+      assert.equal(pool.activeLeases, 0);
     });
   });
 
@@ -113,6 +116,7 @@ describe('hub limits and timeouts', () => {
     await withHub({ pool, callTimeoutMs: 50 }, async (_pool, hub) => {
       const response = await rpc(hub.port, 'judikaty', 'slow-token', 'tools/call', search);
       assert.equal(response.message.error.message, TIMEOUT_TEXT);
+      assert.equal(pool.activeLeases, 0, 'the lease is released after a timed-out call');
     });
   });
 });

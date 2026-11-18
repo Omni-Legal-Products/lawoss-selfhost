@@ -127,11 +127,15 @@ function createMcpServer(service: Service, principal: string, { pool, limits, ca
   const server = new Server({ name: `lawoss-${service.id}`, version: '0.1.0' }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async (request, extra) => {
     try {
-      const client = await pool.client(principal, service.id);
-      const cursor = request.params?.cursor;
-      const result = await client.request({ method: 'tools/list', params: cursor === undefined ? {} : { cursor } },
-        ListToolsResultSchema, { signal: extra.signal });
-      return { ...result, tools: listedTools(service.tools, result.tools) };
+      const { client, release } = await pool.lease(principal, service.id);
+      try {
+        const cursor = request.params?.cursor;
+        const result = await client.request({ method: 'tools/list', params: cursor === undefined ? {} : { cursor } },
+          ListToolsResultSchema, { signal: extra.signal });
+        return { ...result, tools: listedTools(service.tools, result.tools) };
+      } finally {
+        release();
+      }
     } catch (error) {
       throw publicError(error);
     }
@@ -155,19 +159,24 @@ function createMcpServer(service: Service, principal: string, { pool, limits, ca
     if (!decision.allowed) return refuse(decision.text);
     try {
       return await limits.run(principal, service.id, async () => {
-        const client = await pool.client(principal, service.id);
-        const without = withoutArgumentsOf(service.tools, name);
-        if (without.length > 0) {
-          // Fail closed when the manifest names an argument the runtime schema does not have.
-          const tool = await runtimeTool(client, name, extra.signal);
-          if (!tool || !schemaCovers(tool, without)) return refuse(DENY_TEXT);
+        // Leased for the whole call, so the process cannot be evicted between the schema check and the call.
+        const { client, release } = await pool.lease(principal, service.id);
+        try {
+          const without = withoutArgumentsOf(service.tools, name);
+          if (without.length > 0) {
+            // Fail closed when the manifest names an argument the runtime schema does not have.
+            const tool = await runtimeTool(client, name, extra.signal);
+            if (!tool || !schemaCovers(tool, without)) return refuse(DENY_TEXT);
+          }
+          // Only name and arguments are forwarded; client _meta (for example progress tokens) stays here.
+          // The hub's own progress handler lets runtime progress reset the timeout.
+          const result = await client.request({ method: 'tools/call', params: { name, arguments: args } },
+            CallToolResultSchema, { signal: extra.signal, timeout: callTimeoutMs, resetTimeoutOnProgress: true, onprogress: () => {} });
+          write(result.isError ? 'tool-error' : 'ok');
+          return result;
+        } finally {
+          release();
         }
-        // Only name and arguments are forwarded; client _meta (for example progress tokens) stays here.
-        // The hub's own progress handler lets runtime progress reset the timeout.
-        const result = await client.request({ method: 'tools/call', params: { name, arguments: args } },
-          CallToolResultSchema, { signal: extra.signal, timeout: callTimeoutMs, resetTimeoutOnProgress: true, onprogress: () => {} });
-        write(result.isError ? 'tool-error' : 'ok');
-        return result;
       });
     } catch (error) {
       write(error instanceof RetryableError ? 'limited' : 'failed');

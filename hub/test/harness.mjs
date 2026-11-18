@@ -73,11 +73,22 @@ export function fakePool({ onCall } = {}) {
   const clientCalls = [];
   const runtimeCalls = [];
   const stopped = [];
+  let activeLeases = 0;
+  let leaseCalls = 0;
   const clients = new Map();
   return {
     clientCalls,
     runtimeCalls,
     stopped,
+    get activeLeases() { return activeLeases; },
+    get leaseCalls() { return leaseCalls; },
+    async lease(principal, id) {
+      const client = await this.client(principal, id);
+      activeLeases++;
+      leaseCalls++;
+      let released = false;
+      return { client, release() { if (!released) { released = true; activeLeases--; } } };
+    },
     async client(principal, id) {
       clientCalls.push({ principal, id });
       const key = JSON.stringify([principal, id]);

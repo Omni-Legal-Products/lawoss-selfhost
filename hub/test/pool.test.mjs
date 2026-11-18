@@ -172,6 +172,55 @@ describe('process pool', () => {
     assert.equal(pool.size(), 1);
   });
 
+  it('a leased process with no request in flight is not evicted at capacity', async () => {
+    const pool = makePool({ maxTotal: 1, idleMs: 50 });
+    const lease = await pool.lease(A, 'echo');
+    const { pid } = JSON.parse((await lease.client.callTool({ name: 'env', arguments: {} })).content[0].text);
+    // Between two requests of one hub call: nothing in flight, but the lease is held.
+    await assert.rejects(pool.client(B, 'echo'), RetryableError);
+    // Nor does the idle timer stop it while leased.
+    await new Promise(resolve => setTimeout(resolve, 150));
+    assert.equal(pool.size(), 1);
+    assert.equal(JSON.parse((await lease.client.callTool({ name: 'env', arguments: {} })).content[0].text).pid, pid);
+    lease.release();
+    lease.release(); // Idempotent.
+    await call(pool, B, 'echo', 'env');
+    await until(() => !alive(pid), 'the released process to be evicted');
+  });
+
+  it('a failed close on idle stop or eviction is contained and the entry is removed', async () => {
+    const rejections = [];
+    const onRejection = reason => { rejections.push(reason); };
+    process.on('unhandledRejection', onRejection);
+    const pids = [];
+    try {
+      const failClose = client => { client.close = async () => { throw new Error('close failed'); }; };
+      // Idle stop.
+      const idle = makePool({ idleMs: 50 });
+      failClose(await idle.client(A, 'echo'));
+      pids.push((await call(idle, A, 'echo', 'env')).pid);
+      await until(() => idle.size() === 0, 'the idle entry to be removed');
+      // Eviction at capacity: the new process still starts.
+      const full = makePool({ maxTotal: 1 });
+      failClose(await full.client(A, 'echo'));
+      pids.push((await call(full, A, 'echo', 'env')).pid);
+      const b = await call(full, B, 'echo', 'env');
+      assert.notEqual(b.pid, pids[1]);
+      assert.equal(full.size(), 1);
+      // stopPrincipal does not reject either.
+      failClose(await full.client(B, 'echo'));
+      await full.stopPrincipal(B);
+      pids.push(b.pid);
+      assert.equal(full.size(), 0);
+      for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve));
+      assert.deepEqual(rejections, []);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+      // close() was replaced, so these children were never told to stop.
+      for (const pid of pids) { try { process.kill(pid); } catch {} }
+    }
+  });
+
   it('concurrent first calls share one process', async () => {
     const pool = makePool();
     const [x, y] = await Promise.all([call(pool, A, 'echo', 'env'), call(pool, A, 'echo', 'env')]);

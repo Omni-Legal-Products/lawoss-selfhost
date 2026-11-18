@@ -5,7 +5,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { DEFAULT_INHERITED_ENV_VARS, StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { RetryableError } from './limits.js';
 import type { Manifest, ServiceId } from './manifest.js';
-import type { RuntimePool } from './types.js';
+import type { Lease, RuntimePool } from './types.js';
 
 export interface PoolOptions {
   /** fetch-runtimes output: `<runtimesDir>/<plugin>/scripts/run.mjs`. */
@@ -47,6 +47,8 @@ interface Entry {
   ready: Promise<Client>;
   started: boolean;
   inFlight: number;
+  /** Hub calls holding the process; a leased process is busy even between its requests. */
+  leases: number;
   lastUsed: number;
   timer?: ReturnType<typeof setTimeout>;
   gone: boolean;
@@ -91,17 +93,49 @@ export class ProcessPool implements RuntimePool {
     return this.entries.size;
   }
 
+  /**
+   * Holds the principal's runtime for one hub call, starting it if needed. Until release() the
+   * process is neither evicted nor idle-stopped, including between the call's requests.
+   */
+  async lease(principal: string, id: ServiceId): Promise<Lease> {
+    const entry = this.entry(principal, id);
+    // Taken before any await, so the process cannot be evicted while it starts.
+    entry.leases++;
+    clearTimeout(entry.timer);
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      entry.leases--;
+      entry.lastUsed = ++this.clock;
+      this.arm(entry);
+    };
+    try {
+      return { client: await entry.ready, release };
+    } catch (error) {
+      release();
+      throw error;
+    }
+  }
+
+  /** The runtime client without a lease: busy only while a request is in flight. */
   async client(principal: string, id: ServiceId): Promise<Client> {
+    return this.entry(principal, id).ready;
+  }
+
+  /** The current entry, or a new starting one; synchronous, so concurrent calls neither double-start nor overfill. */
+  private entry(principal: string, id: ServiceId): Entry {
     if (!Object.hasOwn(this.opts.manifest.services, id)) throw new Error(`Unknown service ${id}`);
     const key = JSON.stringify([principal, id]);
     const existing = this.entries.get(key);
-    if (existing) return existing.ready;
-    // No await before the map insert, so concurrent calls neither double-start nor overfill.
+    if (existing) return existing;
     const evicted = this.makeRoom(id).map(entry => this.stop(entry));
-    const entry: Entry = { key, principal, id, ready: undefined as never, started: false, inFlight: 0, lastUsed: ++this.clock, gone: false };
+    const entry: Entry = {
+      key, principal, id, ready: undefined as never, started: false, inFlight: 0, leases: 0, lastUsed: ++this.clock, gone: false,
+    };
     this.entries.set(key, entry);
     entry.ready = this.start(entry, evicted);
-    return entry.ready;
+    return entry;
   }
 
   async stopPrincipal(principal: string): Promise<void> {
@@ -114,7 +148,7 @@ export class ProcessPool implements RuntimePool {
     const remaining = (sameService: boolean) => [...this.entries.values()]
       .filter(entry => !victims.includes(entry) && (!sameService || entry.id === id));
     const evictFrom = (candidates: Entry[]) => {
-      const idle = candidates.filter(entry => entry.started && entry.inFlight === 0);
+      const idle = candidates.filter(entry => entry.started && entry.inFlight === 0 && entry.leases === 0);
       if (idle.length === 0) throw new RetryableError('No idle runtime process to stop');
       victims.push(idle.reduce((oldest, entry) => entry.lastUsed < oldest.lastUsed ? entry : oldest));
     };
@@ -183,7 +217,7 @@ export class ProcessPool implements RuntimePool {
 
   private arm(entry: Entry): void {
     clearTimeout(entry.timer);
-    if (entry.gone || entry.inFlight > 0) return;
+    if (entry.gone || entry.inFlight > 0 || entry.leases > 0) return;
     entry.timer = setTimeout(() => { void this.stop(entry); }, this.idleMs);
     entry.timer.unref?.();
   }
@@ -195,9 +229,11 @@ export class ProcessPool implements RuntimePool {
     if (this.entries.get(entry.key) === entry) this.entries.delete(entry.key);
   }
 
+  /** Never rejects: callers stop processes fire-and-forget (idle timer, eviction, disabled principal). */
   private async stop(entry: Entry): Promise<void> {
     this.forget(entry);
     const client = await entry.ready.catch(() => undefined);
-    await client?.close();
+    // The entry is already gone; a failed close leaves nothing for the caller to act on.
+    await client?.close().catch(() => {});
   }
 }

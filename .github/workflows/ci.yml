@@ -49,7 +49,8 @@ jobs:
         run: |
           COMMIT=$(node -p "require('./hub/services.json').catalogCommit")
           node hub/scripts/fetch-runtimes.mjs --catalog catalog --catalog-commit "$COMMIT" --out "$RUNNER_TEMP/runtimes"
-      # The image build does this once; the only step that may use npm and the network for dependencies.
+      # Mirrors the image build's one-time warm-up. This step and the cross-check below may use npm and
+      # the network; only the pooled-runtime step runs without npm and from the read-only cache.
       - name: Warm the shared runtime cache
         run: |
           LAWOSS_CACHE_DIR="$RUNNER_TEMP/lawoss-cache" LAWOSS_STATE_DIR="$RUNNER_TEMP/warm-state" \
