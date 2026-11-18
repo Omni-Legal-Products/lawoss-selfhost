@@ -69,7 +69,7 @@ export async function startIntrospection() {
  * tools/call and stopPrincipal(). `onCall` may throw (or reject) to simulate a runtime-originated
  * JSON-RPC error, or wait to simulate a slow runtime.
  */
-export function fakePool({ onCall } = {}) {
+export function fakePool({ onCall, onList } = {}) {
   const clientCalls = [];
   const runtimeCalls = [];
   const stopped = [];
@@ -94,7 +94,7 @@ export function fakePool({ onCall } = {}) {
       const key = JSON.stringify([principal, id]);
       if (!clients.has(key)) {
         const runtime = new Server({ name: 'fake-runtime', version: '1.0.0' }, { capabilities: { tools: {} } });
-        runtime.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: RUNTIME_TOOLS }));
+        runtime.setRequestHandler(ListToolsRequestSchema, async () => { await onList?.(); return { tools: RUNTIME_TOOLS }; });
         runtime.setRequestHandler(CallToolRequestSchema, async request => {
           runtimeCalls.push({ principal, id, name: request.params.name, arguments: request.params.arguments });
           await onCall?.(request.params);

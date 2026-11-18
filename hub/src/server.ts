@@ -33,9 +33,9 @@ export interface HubOptions {
   allowHttpForTests?: boolean;
   /** Receives one JSON line per tools/call; defaults to stdout. */
   log?: (line: string) => void;
-  /** Rate and concurrency limits for tools/call; defaults to DEFAULT_LIMITS. */
+  /** Rate and concurrency limits for tools/list and tools/call; defaults to DEFAULT_LIMITS. */
   limits?: Limits;
-  /** Timeout of one runtime tools/call in milliseconds, reset by runtime progress; defaults to 120000. */
+  /** Timeout of one runtime request (tools/list, tools/call) in milliseconds; a call's is reset by progress. Defaults to 120000. */
   callTimeoutMs?: number;
 }
 
@@ -109,11 +109,11 @@ function publicError(error: unknown): PublicError {
 }
 
 /** Reads the runtime's own listing of one tool, so an allow-without policy is checked against its real schema. */
-async function runtimeTool(client: Client, name: string, signal: AbortSignal) {
+async function runtimeTool(client: Client, name: string, signal: AbortSignal, timeout: number) {
   let cursor: string | undefined;
   for (let page = 0; page < MAX_LIST_PAGES; page++) {
     const result = await client.request({ method: 'tools/list', params: cursor === undefined ? {} : { cursor } },
-      ListToolsResultSchema, { signal });
+      ListToolsResultSchema, { signal, timeout });
     const tool = result.tools.find(entry => entry.name === name);
     if (tool || result.nextCursor === undefined) return tool;
     cursor = result.nextCursor;
@@ -131,17 +131,20 @@ interface Proxy {
 /** One MCP server per request, proxying tools/list and tools/call to the principal's runtime under the policy. */
 function createMcpServer(service: Service, principal: string, { pool, limits, callTimeoutMs, log }: Proxy): Server {
   const server = new Server({ name: `lawoss-${service.id}`, version: '0.1.0' }, { capabilities: { tools: {} } });
+  // tools/list starts or keeps a runtime like a call does, so it runs under the same limits and timeout.
   server.setRequestHandler(ListToolsRequestSchema, async (request, extra) => {
     try {
-      const { client, release } = await pool.lease(principal, service.id);
-      try {
-        const cursor = request.params?.cursor;
-        const result = await client.request({ method: 'tools/list', params: cursor === undefined ? {} : { cursor } },
-          ListToolsResultSchema, { signal: extra.signal });
-        return { ...result, tools: listedTools(service.tools, result.tools) };
-      } finally {
-        release();
-      }
+      return await limits.run(principal, service.id, async () => {
+        const { client, release } = await pool.lease(principal, service.id);
+        try {
+          const cursor = request.params?.cursor;
+          const result = await client.request({ method: 'tools/list', params: cursor === undefined ? {} : { cursor } },
+            ListToolsResultSchema, { signal: extra.signal, timeout: callTimeoutMs });
+          return { ...result, tools: listedTools(service.tools, result.tools) };
+        } finally {
+          release();
+        }
+      });
     } catch (error) {
       throw publicError(error);
     }
@@ -171,7 +174,7 @@ function createMcpServer(service: Service, principal: string, { pool, limits, ca
           const without = withoutArgumentsOf(service.tools, name);
           if (without.length > 0) {
             // Fail closed when the manifest names an argument the runtime schema does not have.
-            const tool = await runtimeTool(client, name, extra.signal);
+            const tool = await runtimeTool(client, name, extra.signal, callTimeoutMs);
             if (!tool || !schemaCovers(tool, without)) return refuse(DENY_TEXT);
           }
           // Only name and arguments are forwarded; client _meta (for example progress tokens) stays here.
