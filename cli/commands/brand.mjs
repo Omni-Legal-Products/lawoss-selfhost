@@ -22,6 +22,8 @@ import {
 } from '../lib.mjs';
 
 const SLUG = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
+/** Packs built into the auth image (auth/brand); a directory pack may not shadow one of them. */
+export const BUILT_IN_PACKS = Object.freeze(['default', 'lawoss']);
 const HARDENING = ['--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true'];
 /** Where compose.yaml mounts <root>/brand inside the auth container. */
 export const BRAND_MOUNT = '/brand';
@@ -93,6 +95,7 @@ function declaredAssets(raw) {
 function stagePack(ctx, source) {
   const slug = basename(source);
   if (!SLUG.test(slug)) throw new UsageError('the pack directory name must be a lowercase name (letters, digits, -)');
+  if (BUILT_IN_PACKS.includes(slug)) throw new UsageError(`the pack directory name ${slug} is reserved for a pack built into the auth image; rename the directory`);
   if (!lstatSync(source, { throwIfNoEntry: false })?.isDirectory()) throw new Failure(`${source} is not a directory`);
   const brandJson = readPackFile(source, 'brand.json', MAX_BRAND_JSON_BYTES);
   let raw;

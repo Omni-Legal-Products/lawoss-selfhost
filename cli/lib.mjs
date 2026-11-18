@@ -100,7 +100,8 @@ export const readEnvFile = path => parseEnv(readFileSync(path, 'utf8'));
 /** One value as Compose reads it back unchanged: bare when plain, else single-quoted (literal). */
 export function formatEnvValue(value) {
   if (/^[A-Za-z0-9_.:@/,=+-]*$/.test(value)) return value;
-  if (/['\n\r]/.test(value)) throw new Failure('a configuration value cannot be written to .env');
+  // A trailing backslash could escape the closing quote in Compose's dotenv reader.
+  if (/['\n\r]/.test(value) || value.endsWith('\\')) throw new Failure('a configuration value cannot be written to .env');
   return `'${value}'`;
 }
 

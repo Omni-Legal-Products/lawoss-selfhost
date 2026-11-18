@@ -219,3 +219,24 @@ describe('init --brand', () => {
     assert.equal(brandOf(u), 'brand/lawoss');
   });
 });
+
+describe('built-in pack names', () => {
+  it('a pack directory named like a built-in pack is refused and nothing is staged', async () => {
+    const t = await initialized('crz');
+    for (const name of ['default', 'lawoss']) {
+      const pack = makePack(t.root, name);
+      assert.equal(await t.cli('brand', 'set', pack), 2, name);
+      assert.match(t.err.join('\n'), /reserved for a pack built into the auth image/);
+      assert.equal(await t.cli('brand', 'check', pack), 2, name);
+    }
+    assert.equal(t.calls.length, 0);
+    assert.deepEqual(readdirSync(join(t.root, 'brand')), []);
+    assert.equal(brandOf(t), undefined);
+  });
+
+  it('the reserved names are exactly the packs built into auth', async () => {
+    const { BUILT_IN_PACKS } = await import('../commands/brand.mjs');
+    const { repo } = await import('./helpers.mjs');
+    assert.deepEqual([...BUILT_IN_PACKS].sort(), readdirSync(join(repo, 'auth', 'brand')).sort());
+  });
+});

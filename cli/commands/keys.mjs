@@ -31,8 +31,9 @@ export async function setKey(args, ctx) {
   deployment(ctx.root);
   const value = await ctx.readSecret(`Value for ${name} (input hidden): `);
   if (typeof value !== 'string' || value.length === 0) throw new Failure('no value was given; nothing changed');
-  if (value.length > MAX_VALUE || /[\p{Cc}']/u.test(value))
-    throw new Failure('the value must be one line without control characters or single quotes; nothing changed');
+  // A backslash may be read as an escape by Compose's dotenv parser, even inside single quotes.
+  if (value.length > MAX_VALUE || /[\p{Cc}'\\]/u.test(value))
+    throw new Failure('the value must be one line without control characters, single quotes or backslashes; nothing changed');
   await write(ctx, name, value);
   ctx.out(`set ${name}`);
   return 0;
