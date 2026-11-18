@@ -19,6 +19,8 @@ import { restore } from './commands/restore.mjs';
 import { update, rollback } from './commands/update.mjs';
 import { setKey, unsetKey } from './commands/keys.mjs';
 import { restoreSnapshot } from './commands/restore-snapshot.mjs';
+import { rotate } from './commands/rotate.mjs';
+import { services } from './commands/services.mjs';
 
 export const USAGE = `Usage: lawoss-selfhost COMMAND
   init --base BASE --services LIST --acme-email EMAIL [--brand PACK] --record PATH --record-sha256 HEX
@@ -26,6 +28,8 @@ export const USAGE = `Usage: lawoss-selfhost COMMAND
   invite USER SERVICES
   grant USER SERVICES | revoke USER SERVICES | disable USER | list
   set-key NAME (value from stdin) | unset-key NAME
+  rotate introspection|cookies|signing
+  services add ID | services remove ID
   doctor
   backup init-key | backup | restore --dry-run [--private-key PATH] [BACKUP_DIR] | restore --apply [--private-key PATH] BACKUP_DIR
   update --to VERSION --record PATH --record-sha256 HEX | rollback
@@ -34,7 +38,7 @@ Environment: LAWOSS_ROOT (default /opt/lawoss).`;
 
 const COMMANDS = {
   init, brand, invite, grant, revoke, disable, list, 'set-key': setKey, 'unset-key': unsetKey, doctor, backup, restore, update, rollback,
-  'restore-snapshot': restoreSnapshot,
+  'restore-snapshot': restoreSnapshot, rotate, services,
 };
 
 /** Runs one command with an injected context; returns the exit code. */

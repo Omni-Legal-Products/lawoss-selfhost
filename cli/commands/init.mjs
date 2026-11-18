@@ -13,7 +13,7 @@ import { keepRelease } from '../host.mjs';
 
 
 /** A signing key as auth's oidc-provider takes it: an RSA private JWK with kid, alg and use. */
-function signingKey() {
+export function signingKey() {
   const jwk = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ format: 'jwk' });
   return { ...jwk, kid: randomUUID(), alg: 'RS256', use: 'sig' };
 }

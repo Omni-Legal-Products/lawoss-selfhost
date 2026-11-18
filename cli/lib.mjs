@@ -195,6 +195,21 @@ export function deployment(root) {
 
 export const resourceUrl = (id, base) => `https://${id}.${base}/mcp`;
 
+/** AUTH_CONFIG_JSON and HUB_CONFIG_JSON of an .env text, parsed; their values are never printed. */
+export function readConfigs(text) {
+  const vars = parseEnv(text);
+  let auth;
+  let hub;
+  try { auth = JSON.parse(vars.AUTH_CONFIG_JSON); hub = JSON.parse(vars.HUB_CONFIG_JSON); } catch { auth = undefined; }
+  if (auth === null || typeof auth !== 'object' || hub === null || typeof hub !== 'object')
+    throw new Failure('.env has no readable AUTH_CONFIG_JSON and HUB_CONFIG_JSON');
+  return { auth, hub };
+}
+
+/** The .env text with both configurations replaced, every other line kept. */
+export const withConfigs = (text, { auth, hub }, extra = {}) =>
+  setEnvVars(text, { AUTH_CONFIG_JSON: JSON.stringify(auth), HUB_CONFIG_JSON: JSON.stringify(hub), ...extra });
+
 /**
  * The Caddyfile: the global options with the certificate contact, the auth site and one copy of
  * the SERVICES section per enabled service.
