@@ -119,26 +119,34 @@ export function setup({ handler, probes, base = 'example.com' } = {}) {
   const err = [];
   const state = { handler, probes: probes ?? healthyProbes(base) };
   let ticks = 0;
+  /** The answer of the fake runner before any `state.leak` is added. */
+  async function answerOf(argv, opts) {
+    const answer = state.handler ? await state.handler(argv, opts) : undefined;
+    if (answer) return answer;
+    const at = argv.indexOf('--list-tools');
+    if (at >= 0) return listToolsAnswer(argv[at + 1]);
+    if (argv.includes('--check-introspection')) return introspectionAnswer(root);
+    // The running auth container of the project, as `docker ps -q` lists it.
+    if (argv[0] === 'docker' && argv[1] === 'ps') return { code: 0, stdout: `${RUNNING_ID}\n`, stderr: '' };
+    if (argv.includes('--manifest-sha256')) return manifestAnswer(root);
+    // A snapshot container: tar writes its archive into the mounted directory with a loose mode.
+    const snapshot = argv.find(arg => arg.endsWith(':/snapshot'));
+    if (snapshot && argv.includes('tar')) {
+      const archive = argv[argv.indexOf('-cf') + 1].replace('/snapshot/', '');
+      writeFileSync(join(snapshot.slice(0, -':/snapshot'.length), archive), 'archive\n', { mode: 0o644 });
+    }
+    return { code: 0, stdout: '', stderr: '' };
+  }
+  async function run(argv, opts = {}) {
+    calls.push(argv);
+    const answer = await answerOf(argv, opts);
+    // `state.leak`: every container also prints this text (stdout too, unless it carries an answer).
+    return state.leak === undefined ? answer
+      : { ...answer, stdout: answer.stdout || state.leak, stderr: `${answer.stderr}${state.leak}` };
+  }
   const ctx = {
     root,
-    async run(argv, opts = {}) {
-      calls.push(argv);
-      const answer = state.handler ? await state.handler(argv, opts) : undefined;
-      if (answer) return answer;
-      const at = argv.indexOf('--list-tools');
-      if (at >= 0) return listToolsAnswer(argv[at + 1]);
-      if (argv.includes('--check-introspection')) return introspectionAnswer(root);
-      // The running auth container of the project, as `docker ps -q` lists it.
-      if (argv[0] === 'docker' && argv[1] === 'ps') return { code: 0, stdout: `${RUNNING_ID}\n`, stderr: '' };
-      if (argv.includes('--manifest-sha256')) return manifestAnswer(root);
-      // A snapshot container: tar writes its archive into the mounted directory with a loose mode.
-      const snapshot = argv.find(arg => arg.endsWith(':/snapshot'));
-      if (snapshot && argv.includes('tar')) {
-        const archive = argv[argv.indexOf('-cf') + 1].replace('/snapshot/', '');
-        writeFileSync(join(snapshot.slice(0, -':/snapshot'.length), archive), 'archive\n', { mode: 0o644 });
-      }
-      return { code: 0, stdout: '', stderr: '' };
-    },
+    run,
     chown(path, uid, gid) { chowns.push([path, uid, gid]); },
     // Whether a command is on PATH; gh is absent unless a test says otherwise.
     which: name => (state.which ?? (() => false))(name),
