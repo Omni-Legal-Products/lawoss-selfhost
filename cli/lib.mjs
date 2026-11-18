@@ -233,6 +233,8 @@ export function requireImage(ref, name) {
 // ---------------------------------------------------------------------------------------------
 // Release records: releases/<version>.json, pinned by its SHA-256 in a reviewed catalog commit.
 
+export const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/;
+
 const RECORD_FIELDS = new Set(['version', 'commit', 'images', 'files', 'note']);
 const IMAGE_FIELDS = ['auth', 'hub', 'proxy'];
 /**
@@ -266,7 +268,7 @@ export function validateRecord(record, version) {
 }
 
 /** The host files under <root> that a record must cover: the fixed files and everything in bin/. */
-function installedHostFiles(root) {
+export function installedHostFiles(root) {
   const found = [];
   const walk = relative => {
     const dir = join(root, relative);
@@ -287,15 +289,21 @@ function installedHostFiles(root) {
  * Nothing is downloaded; the skill installs the files from the record's commit.
  */
 export function verifyHostFiles(root, record) {
+  const wrong = hostFileDifferences(root, record);
+  if (wrong.length)
+    throw new Failure(`host files of release ${record.version} must be installed first: ${wrong.join(', ')} differ from its record`);
+}
+
+/** The record's host files that are missing or changed under `dir`, and the bin/ files it does not list; sorted. */
+export function hostFileDifferences(dir, record) {
   const wrong = [];
   for (const [path, digest] of Object.entries(record.files)) {
-    const full = join(root, path);
+    const full = join(dir, path);
     const info = lstatSync(full, { throwIfNoEntry: false });
     if (!info?.isFile() || sha256(readFileSync(full)) !== digest) wrong.push(path);
   }
-  for (const path of installedHostFiles(root)) if (!Object.hasOwn(record.files, path)) wrong.push(path);
-  if (wrong.length)
-    throw new Failure(`host files of release ${record.version} must be installed first: ${wrong.sort().join(', ')} differ from its record`);
+  for (const path of installedHostFiles(dir)) if (!Object.hasOwn(record.files, path)) wrong.push(path);
+  return wrong.sort();
 }
 
 /** Keeps the accepted record (no secret) as <root>/releases/<version>.json, for rollback. */
@@ -318,7 +326,6 @@ export function keptRecord(root, version) {
   return validateRecord(record, version);
 }
 
-const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/;
 
 /** Reads a record and accepts it only when its bytes hash to the pinned value (and name `version`, if given). */
 export function readRecord(path, pinnedSha, version) {

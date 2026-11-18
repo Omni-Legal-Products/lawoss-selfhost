@@ -106,9 +106,10 @@ export function setup({ handler, probes, base = 'example.com' } = {}) {
   copyFileSync(join(repo, 'deploy', 'compose.yaml'), join(root, 'compose.yaml'));
   copyFileSync(join(repo, 'deploy', 'Caddyfile.template'), join(root, 'Caddyfile.template'));
   copyFileSync(join(repo, 'hub', 'services.json'), join(root, 'services.json'));
-  // The CLI as installed in <root>/bin.
+  // The CLI as installed in <root>/bin: every file of cli/ and cli/commands/ (not the tests).
   mkdirSync(join(root, 'bin', 'commands'), { recursive: true });
-  for (const name of ['lawoss-selfhost.mjs', 'lib.mjs', 'package.json']) copyFileSync(join(repo, 'cli', name), join(root, 'bin', name));
+  for (const entry of readdirSync(join(repo, 'cli'), { withFileTypes: true }))
+    if (entry.isFile()) copyFileSync(join(repo, 'cli', entry.name), join(root, 'bin', entry.name));
   for (const name of readdirSync(join(repo, 'cli', 'commands')))
     copyFileSync(join(repo, 'cli', 'commands', name), join(root, 'bin', 'commands', name));
   const { path: record, sha: recordSha } = writeRecord(root);
@@ -127,6 +128,8 @@ export function setup({ handler, probes, base = 'example.com' } = {}) {
       const at = argv.indexOf('--list-tools');
       if (at >= 0) return listToolsAnswer(argv[at + 1]);
       if (argv.includes('--check-introspection')) return introspectionAnswer(root);
+      // The running auth container of the project, as `docker ps -q` lists it.
+      if (argv[0] === 'docker' && argv[1] === 'ps') return { code: 0, stdout: `${RUNNING_ID}\n`, stderr: '' };
       if (argv.includes('--manifest-sha256')) return manifestAnswer(root);
       // A snapshot container: tar writes its archive into the mounted directory with a loose mode.
       const snapshot = argv.find(arg => arg.endsWith(':/snapshot'));
@@ -155,6 +158,35 @@ export function setup({ handler, probes, base = 'example.com' } = {}) {
     return secrets.shift();
   };
   return { root, ctx, calls, chowns, out, err, state, cli, record, recordSha, secrets };
+}
+
+/** The container id the fake `docker ps` reports. */
+export const RUNNING_ID = 'c0ffee';
+
+/**
+ * Installs the host files of a next release under root, as install-host-files.sh would: compose.yaml,
+ * Caddyfile.template and one CLI module change, one module is added. Returns a record for them.
+ */
+export function installNextRelease(root, version = '0.0.1', images) {
+  const marker = `# release ${version}\n`;
+  for (const name of ['compose.yaml', 'Caddyfile.template', 'bin/commands/doctor.mjs'])
+    writeFileSync(join(root, name), `${readFileSync(join(root, name), 'utf8')}${name.endsWith('.mjs') ? '// ' : ''}${marker}`);
+  writeFileSync(join(root, 'bin', 'commands', 'added.mjs'), `// only in ${version}\n`);
+  const digit = String(version.split('.').at(-1));
+  return writeRecord(root, {
+    version,
+    commit: digit.repeat(40),
+    images: images ?? {
+      auth: `lawoss-auth@sha256:${digit.repeat(64)}`,
+      hub: `lawoss-hub@sha256:${digit.repeat(64)}`,
+      proxy: `caddy@sha256:${digit.repeat(64)}`,
+    },
+  });
+}
+
+/** The host files under root with their bytes, for byte-for-byte comparisons. */
+export function hostBytes(root) {
+  return Object.fromEntries(Object.keys(hostFiles(root)).sort().map(path => [path, readFileSync(join(root, path), 'utf8')]));
 }
 
 /** The certificate contact every test deployment uses. */

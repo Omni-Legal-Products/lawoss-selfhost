@@ -17,6 +17,7 @@ import { doctor, realProbes } from './commands/doctor.mjs';
 import { backup, restore } from './commands/backup.mjs';
 import { update, rollback } from './commands/update.mjs';
 import { setKey, unsetKey } from './commands/keys.mjs';
+import { restoreSnapshot } from './commands/restore-snapshot.mjs';
 
 export const USAGE = `Usage: lawoss-selfhost COMMAND
   init --base BASE --services LIST --acme-email EMAIL [--brand PACK] --record PATH --record-sha256 HEX
@@ -27,10 +28,12 @@ export const USAGE = `Usage: lawoss-selfhost COMMAND
   doctor
   backup init-key | backup | restore --dry-run [--private-key PATH] [BACKUP_DIR]
   update --to VERSION --record PATH --record-sha256 HEX | rollback
+  restore-snapshot SNAPSHOT_DIR
 Environment: LAWOSS_ROOT (default /opt/lawoss).`;
 
 const COMMANDS = {
   init, brand, invite, grant, revoke, disable, list, 'set-key': setKey, 'unset-key': unsetKey, doctor, backup, restore, update, rollback,
+  'restore-snapshot': restoreSnapshot,
 };
 
 /** Runs one command with an injected context; returns the exit code. */

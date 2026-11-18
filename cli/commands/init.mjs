@@ -5,10 +5,11 @@
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import {
-  ACME_EMAIL, DNS_NAME, Failure, SERVICE_NAMES, UsageError, formatEnvValue, keepRecord, loadManifest, options, parseServiceList, paths,
+  ACME_EMAIL, DNS_NAME, Failure, SERVICE_NAMES, UsageError, formatEnvValue, loadManifest, options, parseServiceList, paths,
   providerKeys, randomKey, readRecord, renderCaddyfile, resourceUrl, sha256, verifyAttestations, verifyHostFiles, writePrivateFile,
 } from '../lib.mjs';
 import { checkPack, checkPackArg, ensureBrandDir, installStaged, resolvePack } from './brand.mjs';
+import { keepRelease } from '../host.mjs';
 
 
 /** A signing key as auth's oidc-provider takes it: an RSA private JWK with kid, alg and use. */
@@ -98,7 +99,8 @@ export async function init(args, ctx) {
     writeFileSync(p.caddyfile, caddyfile);
     chmodSync(p.caddyfile, 0o644);
     ctx.chown(p.caddyfile, 0, 0);
-    keepRecord(ctx, record);
+    // The record and a copy of the host files, so that a later update can come back to them.
+    keepRelease(ctx, record);
   } finally {
     pack?.release();
   }
