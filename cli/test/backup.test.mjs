@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { createPrivateKey } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { SECRETISH, SENTINEL, initialized, setup } from './helpers.mjs';
+import { keptRecord, verifyHostFiles } from '../lib.mjs';
+import { seal, unseal } from '../commands/backup.mjs';
+import { RUNNING_ID, SECRETISH, SENTINEL, hostBytes, initialized, setup } from './helpers.mjs';
 
 // Answers the backup containers: the auth snapshot and the hub-data archive land in the mounted directory.
 function backupWrites(argv) {
@@ -65,7 +67,9 @@ describe('backup', () => {
     assert.ok(argv.includes('--read-only') && argv.includes(`${join(dir, 'auth.enc.json')}:/backup/auth.enc.json:ro`));
     assert.deepEqual(t.out, [`PASS backup ${dir}`]);
     assert.ok(![...t.out, ...t.err].join('\n').includes(SENTINEL));
-    assert.equal(await t.cli('restore'), 2, 'only --dry-run in version 1');
+    assert.equal(await t.cli('restore'), 2, '--dry-run or --apply');
+    assert.equal(await t.cli('restore', '--dry-run', '--apply', dir), 2);
+    assert.equal(await t.cli('restore', '--apply'), 2, '--apply needs the backup directory');
   });
 
   it('restore --dry-run fails on a tampered host part', async () => {
@@ -143,6 +147,111 @@ describe('backup key', () => {
     assert.equal(await t.cli('backup'), 1);
     assert.match(t.err.join('\n'), /RSA/);
     assert.equal(t.calls.length, 0);
+  });
+});
+
+describe('restore --apply', () => {
+  // A deployment with a custom brand pack and a backup of it; the private key is moved off the server.
+  async function backedUp() {
+    const t = await initialized('crz');
+    mkdirSync(join(t.root, 'brand', 'firm', 'fonts'), { recursive: true });
+    writeFileSync(join(t.root, 'brand', 'firm', 'brand.json'), '{"assets":{}}\n');
+    writeFileSync(join(t.root, 'brand', 'firm', 'fonts', 'a.woff2'), 'wOF2');
+    t.state.handler = backupWrites;
+    assert.equal(await t.cli('backup', 'init-key'), 0);
+    assert.equal(await t.cli('backup'), 0, t.err.join('\n'));
+    const [dir] = t.out;
+    const away = mkdtempSync(join(tmpdir(), 'lawoss-key-away-'));
+    after(() => rmSync(away, { recursive: true, force: true }));
+    const key = join(away, 'backup-private.pem');
+    renameSync(join(t.root, 'keys', 'backup-private.pem'), key);
+    return { t, dir, key };
+  }
+  const read = path => readFileSync(path, 'utf8');
+
+  it('the host part also holds brand/ and releases/ with the kept host files', async () => {
+    const { dir, key } = await backedUp();
+    const content = unseal(JSON.parse(read(join(dir, 'host.enc.json'))), readFileSync(key));
+    const names = Object.keys(content.files);
+    for (const name of ['.env', 'Caddyfile', 'hub-data.tar', 'host/brand/firm/brand.json', 'host/brand/firm/fonts/a.woff2',
+      'host/releases/0.0.0.json', 'host/releases/0.0.0/compose.yaml', 'host/releases/0.0.0/bin/lib.mjs'])
+      assert.ok(names.includes(name), name);
+    assert.ok(names.every(name => !name.includes('/.')), 'no staging or hidden file');
+  });
+
+  it('restores a backup onto a fresh server: host files, brand, releases, .env, both volumes, then doctor', async () => {
+    const { t: source, dir, key } = await backedUp();
+    const t = setup();
+    // The fresh server has only the CLI and whatever release files were installed; restore puts the backup's in place.
+    writeFileSync(join(t.root, 'compose.yaml'), '# another release\n');
+    let restoredEnv;
+    t.state.handler = argv => {
+      if (argv[1] === 'volume' && argv[2] === 'inspect') return { code: 1, stdout: '', stderr: '' };
+      if (argv[1] === 'run' && argv.includes('sh') && String(argv.at(-1)).includes('hub-data')) {
+        const archive = argv.find(arg => arg.endsWith(':/archive/hub-data.tar:ro')).split(':')[0];
+        assert.equal(read(archive), `archive ${SENTINEL}\n`, 'the hub-data archive from the backup');
+        assert.equal(statSync(archive).mode & 0o777, 0o600);
+      }
+      if (argv.includes('--check-introspection')) restoredEnv = read(join(t.root, '.env'));
+      return undefined;
+    };
+    assert.equal(await t.cli('restore', '--apply', '--private-key', key, dir), 0, t.err.join('\n'));
+    assert.deepEqual(readFileSync(join(t.root, '.env')), readFileSync(join(source.root, '.env')));
+    assert.equal(statSync(join(t.root, '.env')).mode & 0o777, 0o600);
+    assert.deepEqual(readFileSync(join(t.root, 'Caddyfile')), readFileSync(join(source.root, 'Caddyfile')));
+    assert.deepEqual(hostBytes(t.root), hostBytes(source.root));
+    verifyHostFiles(t.root, keptRecord(t.root, '0.0.0'));
+    verifyHostFiles(join(t.root, 'releases', '0.0.0'), keptRecord(t.root, '0.0.0'));
+    assert.equal(read(join(t.root, 'brand', 'firm', 'fonts', 'a.woff2')), 'wOF2');
+    assert.ok(restoredEnv, 'doctor ran after the restore');
+
+    const image = `lawoss-auth@sha256:${'0'.repeat(64)}`;
+    const authRun = t.calls.find(argv => argv[1] === 'run' && argv.some(arg => arg.endsWith(':/keys/private.pem:ro')));
+    assert.ok(authRun, 'auth\'s own restore runs in a one-off container');
+    assert.ok(authRun.includes(image));
+    assert.ok(authRun.includes(`${key}:/keys/private.pem:ro`) && authRun.includes(`${join(dir, 'auth.enc.json')}:/backup/auth.enc.json:ro`));
+    assert.ok(authRun.includes('lawoss_auth-data:/data'));
+    assert.deepEqual(authRun.slice(authRun.indexOf('--network'), authRun.indexOf('--network') + 2), ['--network', 'none']);
+    assert.match(authRun.at(-1), /scripts\/backup\.mjs restore .*--destination \/tmp\/restore/);
+    assert.match(authRun.at(-1), /rm -f \/data\/auth\.sqlite-wal \/data\/auth\.sqlite-shm/);
+    const kinds = t.calls.map(argv => argv[1] === 'ps' || argv[1] === 'stop' ? argv[1] : argv[1] === 'volume' ? `volume ${argv[2]}`
+      : argv === authRun ? 'auth' : argv[1] === 'run' && argv.includes('sh') ? 'hub-data' : argv.includes('up') ? 'up' : 'doctor');
+    assert.deepEqual(kinds.slice(0, 9),
+      ['ps', 'stop', 'volume inspect', 'volume create', 'auth', 'volume inspect', 'volume create', 'hub-data', 'up'], kinds.join(' '));
+    assert.deepEqual(t.calls[1], ['docker', 'stop', RUNNING_ID]);
+    assert.equal(t.out.at(-1), `PASS restore ${dir}`);
+    assert.ok(t.out.slice(0, -1).every(line => line.startsWith("PASS ")), "doctor lines before it");
+    assert.ok(![...t.out, ...t.err].join('\n').includes(SENTINEL));
+    assert.doesNotMatch([...t.out, ...t.err].join('\n'), SECRETISH);
+    assert.deepEqual(readdirSync(join(t.root, 'backups')).filter(name => name.startsWith('.')), [], 'the clear archive is removed');
+  });
+
+  it('refuses an envelope that names a path outside brand/ and releases/, before anything changes', async () => {
+    const { t, dir, key } = await backedUp();
+    const content = unseal(JSON.parse(read(join(dir, 'host.enc.json'))), readFileSync(key));
+    const evil = Buffer.from('owned\n');
+    content.files['host/../compose.yaml'] = evil.toString('base64');
+    content.manifest['host/../compose.yaml'] = (await import('node:crypto')).createHash('sha256').update(evil).digest('hex');
+    // Anyone holding the public key can seal an envelope.
+    writeFileSync(join(dir, 'host.enc.json'), JSON.stringify(seal(content, readFileSync(join(t.root, 'keys', 'backup-public.pem')))));
+    const fresh = setup();
+    assert.equal(await fresh.cli('restore', '--apply', '--private-key', key, dir), 1);
+    assert.match(fresh.err.join('\n'), /outside/);
+    assert.equal(fresh.calls.length, 0);
+    assert.equal(existsSync(join(fresh.root, '.env')), false);
+  });
+
+  it('refuses a backup whose kept host files do not match its release record', async () => {
+    const { t, dir, key } = await backedUp();
+    const content = unseal(JSON.parse(read(join(dir, 'host.enc.json'))), readFileSync(key));
+    const changed = Buffer.from('# changed\n');
+    content.files['host/releases/0.0.0/compose.yaml'] = changed.toString('base64');
+    content.manifest['host/releases/0.0.0/compose.yaml'] = (await import('node:crypto')).createHash('sha256').update(changed).digest('hex');
+    writeFileSync(join(dir, 'host.enc.json'), JSON.stringify(seal(content, readFileSync(join(t.root, 'keys', 'backup-public.pem')))));
+    const fresh = setup();
+    assert.equal(await fresh.cli('restore', '--apply', '--private-key', key, dir), 1);
+    assert.match(fresh.err.join('\n'), /compose\.yaml/);
+    assert.equal(fresh.calls.length, 0);
   });
 });
 

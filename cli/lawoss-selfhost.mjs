@@ -14,7 +14,8 @@ import { brand } from './commands/brand.mjs';
 import { invite } from './commands/invite.mjs';
 import { grant, revoke, disable, list } from './commands/admin.mjs';
 import { doctor, realProbes } from './commands/doctor.mjs';
-import { backup, restore } from './commands/backup.mjs';
+import { backup } from './commands/backup.mjs';
+import { restore } from './commands/restore.mjs';
 import { update, rollback } from './commands/update.mjs';
 import { setKey, unsetKey } from './commands/keys.mjs';
 import { restoreSnapshot } from './commands/restore-snapshot.mjs';
@@ -26,7 +27,7 @@ export const USAGE = `Usage: lawoss-selfhost COMMAND
   grant USER SERVICES | revoke USER SERVICES | disable USER | list
   set-key NAME (value from stdin) | unset-key NAME
   doctor
-  backup init-key | backup | restore --dry-run [--private-key PATH] [BACKUP_DIR]
+  backup init-key | backup | restore --dry-run [--private-key PATH] [BACKUP_DIR] | restore --apply [--private-key PATH] BACKUP_DIR
   update --to VERSION --record PATH --record-sha256 HEX | rollback
   restore-snapshot SNAPSHOT_DIR
 Environment: LAWOSS_ROOT (default /opt/lawoss).`;

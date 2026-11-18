@@ -2,16 +2,15 @@
 // copy off the server and its public half (0644). It never replaces an existing public key.
 // backup: an encrypted backup of both data volumes and the configuration, into
 // <root>/backups/<time>/ (0700). The auth part is auth's own scripts/backup.mjs snapshot; the host
-// part (.env, Caddyfile, a tar of hub-data) is sealed here the same way (AES-256-GCM, key wrapped
-// with RSA-OAEP-SHA256). Both use keys/backup-public.pem only; the private key is never read, so it
-// can live off the server.
-// restore --dry-run [DIR]: decrypts and checks a backup (the auth part in a throwaway container
-// whose destination is a tmpfs) and writes nothing.
+// part (.env, Caddyfile, a tar of hub-data, and brand/ and releases/ with every kept release's host
+// files under host/) is sealed here the same way (AES-256-GCM, key wrapped with RSA-OAEP-SHA256).
+// Both use keys/backup-public.pem only; the private key is never read, so it can live off the
+// server. restore (commands/restore.mjs) reads them back.
 import {
   constants, createCipheriv, createDecipheriv, createPrivateKey, createPublicKey, generateKeyPairSync, privateDecrypt, publicEncrypt, randomBytes,
 } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   Failure, PROJECT, UsageError, deployment, options, paths, readEnvFile, requireImage, sha256, stamp, writePrivateFile,
 } from '../lib.mjs';
@@ -23,7 +22,7 @@ const oaep = key => ({ key, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash:
 const READER = ['--rm', '--read-only', '--network', 'none', '--user', '0:0', '--cap-drop', 'ALL', '--cap-add', 'DAC_READ_SEARCH',
   '--security-opt', 'no-new-privileges:true'];
 
-function keyPaths(root) {
+export function keyPaths(root) {
   const dir = paths(root).keys;
   return { dir, private: join(dir, 'backup-private.pem'), public: join(dir, 'backup-public.pem') };
 }
@@ -63,6 +62,28 @@ function backupPublicKey(root) {
   if (key.asymmetricKeyType !== 'rsa' || key.asymmetricKeyDetails.modulusLength < 3072)
     throw new Failure(`${keys.public} must be an RSA key of at least 3072 bits`);
   return keys.public;
+}
+
+/** Host directories a backup carries under `host/`: custom brand packs and kept releases (records and host files). */
+export const HOST_TREES = ['brand', 'releases'];
+/** A name a backup may carry; anything else in an envelope is refused on restore (anyone with the public key can seal one). */
+export const BACKUP_NAME = /^(?:\.env|Caddyfile|hub-data\.tar|host\/(?:brand|releases)(?:\/[A-Za-z0-9_-][A-Za-z0-9._+-]{0,127}){1,8})$/;
+
+/** Regular files under <root>/<name>, as `host/<name>/<path>`; hidden staging entries and links are left out. */
+function hostTree(root, name) {
+  const files = {};
+  const walk = relative => {
+    const dir = join(root, relative);
+    if (!lstatSync(dir, { throwIfNoEntry: false })?.isDirectory()) return;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name.startsWith('.')) continue;
+      const path = `${relative}/${entry.name}`;
+      if (entry.isDirectory()) walk(path);
+      else if (entry.isFile() && BACKUP_NAME.test(`host/${path}`)) files[`host/${path}`] = readFileSync(join(root, path));
+    }
+  };
+  walk(name);
+  return files;
 }
 
 export function seal(content, publicPem) {
@@ -123,7 +144,13 @@ export async function backup(args, ctx) {
       '--entrypoint', 'tar', image, '-cf', '/backup/hub-data.tar', '-C', '/source', 'hub-data']);
     if (hub.code !== 0) throw new Failure(`hub-data backup failed (exit ${hub.code})`);
 
-    const files = { '.env': env, Caddyfile: existsSync(p.caddyfile) ? readFileSync(p.caddyfile) : Buffer.alloc(0), 'hub-data.tar': readFileSync(archive) };
+    const files = {
+      '.env': env,
+      Caddyfile: existsSync(p.caddyfile) ? readFileSync(p.caddyfile) : Buffer.alloc(0),
+      'hub-data.tar': readFileSync(archive),
+      ...hostTree(ctx.root, 'brand'),
+      ...hostTree(ctx.root, 'releases'),
+    };
     const content = {
       createdAt: ctx.now().toISOString(),
       release,
@@ -141,37 +168,4 @@ export async function backup(args, ctx) {
   }
   ctx.out(dir);
   return 0;
-}
-
-function latestBackup(root) {
-  const dir = paths(root).backups;
-  const names = existsSync(dir) ? readdirSync(dir).filter(name => /^\d{4}-\d{2}-\d{2}T[\d-]+Z$/.test(name)).sort() : [];
-  if (!names.length) throw new Failure(`no backup in ${dir}`);
-  return join(dir, names.at(-1));
-}
-
-export async function restore(args, ctx) {
-  const { values, positionals } = options(args, { 'dry-run': { type: 'boolean' }, 'private-key': { type: 'string' } }, { positionals: [0, 1] });
-  if (!values['dry-run']) throw new UsageError('only restore --dry-run is available in version 1');
-  const dir = positionals[0] ? resolve(positionals[0]) : latestBackup(ctx.root);
-  if (positionals[0] && (!isAbsolute(positionals[0]) || /[:,\n]/.test(dir))) throw new UsageError('BACKUP_DIR must be an absolute path');
-  const privateKey = values['private-key'] ?? keyPaths(ctx.root).private;
-  if (!isAbsolute(privateKey) || /[:,\n]/.test(privateKey)) throw new UsageError('--private-key must be an absolute path');
-  const p = paths(ctx.root);
-  const image = requireImage(existsSync(p.env) ? readEnvFile(p.env).LAWOSS_AUTH_IMAGE : undefined, 'auth');
-
-  let ok = false;
-  try {
-    unseal(JSON.parse(readFileSync(join(dir, 'host.enc.json'), 'utf8')), readFileSync(privateKey));
-    const result = await ctx.run(['docker', 'run', '--rm', '--read-only', '--network', 'none', '--user', '0:0', '--cap-drop', 'ALL',
-      '--security-opt', 'no-new-privileges:true', '--tmpfs', '/tmp',
-      '-v', `${join(dir, 'auth.enc.json')}:/backup/auth.enc.json:ro`, '-v', `${privateKey}:/keys/private.pem:ro`,
-      '--entrypoint', 'node', image, 'scripts/backup.mjs', 'restore',
-      '--input', '/backup/auth.enc.json', '--private-key', '/keys/private.pem', '--destination', '/tmp/restore-check']);
-    ok = result.code === 0;
-  } catch {
-    ok = false;
-  }
-  ctx.out(`${ok ? 'PASS' : 'FAIL'} backup ${dir}`);
-  return ok ? 0 : 1;
 }
