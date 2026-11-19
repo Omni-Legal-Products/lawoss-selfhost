@@ -3,9 +3,9 @@
 Self-hosted LAWOSS MCP servers with a branded login, deployable by an AI agent.
 
 > Status: early. This repository contains the authorization server (`auth/`), the MCP hub
-> (`hub/`), the Compose deployment (`deploy/`) and the setup CLI (`cli/`). Release 0.1.0 is
-> published: its auth and hub images are public in `ghcr.io/omni-legal-products`, pinned by digest
-> in its release record (see [Published releases](#published-releases)). The `lawoss-selfhost`
+> (`hub/`), the Compose deployment (`deploy/`) and the setup CLI (`cli/`). The latest release is
+> 0.2.0: its auth and hub images are public in `ghcr.io/omni-legal-products`, pinned by digest in
+> its release record (see [Published releases](#published-releases)). The `lawoss-selfhost`
 > skill in the LAWOSS marketplace guides an AI agent through deploying it.
 
 ## Contents
@@ -228,7 +228,16 @@ version and the catalog commit). It builds the auth and hub images, pushes them 
 
 | Version | Date | Commit | Release record SHA-256 |
 |---|---|---|---|
+| 0.2.0 | 2026-11-19 | `29440f8af25792e42b4c764f8334ec9be239439b` | `425865a7262019e6d77c7b847b9a42cdc8b0c4ae02b9358dd3ed39ccbc5f38b3` |
 | 0.1.0 | 2026-11-18 | `d041ee6fb116a65dde7201fb4c7d15bbb0b51256` | `6f96cd390968ecfee44c34057b5d61705391ffa91953791cb463d286edfcedde` |
+
+0.2.0 adds the optional proxy ports (see [Behind an existing reverse proxy](#behind-an-existing-reverse-proxy)).
+
+Images of 0.2.0:
+
+- auth: `ghcr.io/omni-legal-products/lawoss-auth@sha256:014b41f319cc634bea50aee8a14380bbf6623ee56a3041d7912396f3e636dde7`
+- hub: `ghcr.io/omni-legal-products/lawoss-hub@sha256:c9bd106d579e842109052b73e0f2e179bdbe440cb7936c41dd62d23bc12f7714`
+- proxy: `caddy:2.11.9@sha256:4851e54a46b206517c574821bb5cc67f170d2156041e9fbc4c9193b45e84a75b`
 
 Images of 0.1.0:
 
@@ -239,11 +248,13 @@ Images of 0.1.0:
 Check an image's build provenance with
 `gh attestation verify oci://IMAGE --repo Omni-Legal-Products/lawoss-selfhost`.
 
-The release record is not committed here. The workflow run keeps it as the `release-0.1.0`
-artifact until 2027-02-16; the lasting copy is in the LAWOSS marketplace, bundled with the
-`lawoss-selfhost` skill (`plugins/lawoss-selfhost/skills/lawoss-selfhost/release/0.1.0.json`) and
-pinned in its `releases.json`. Place it at `releases/0.1.0.json` in a checkout of the commit above
-and check its SHA-256 before use.
+Release records are not committed here. Each workflow run keeps its record as the
+`release-<version>` artifact for 90 days (0.1.0 until 2027-02-16, 0.2.0 until 2027-02-17). The
+lasting copy is in the LAWOSS marketplace: the `lawoss-selfhost` skill bundles the record of the
+release it pins (`plugins/lawoss-selfhost/skills/lawoss-selfhost/release/<version>.json`) and
+`releases.json` pins its SHA-256; records of earlier releases stay in the marketplace's git history.
+Place a record at `releases/<version>.json` in a checkout of its commit and check its SHA-256 before
+use.
 
 ## Operator notes
 
