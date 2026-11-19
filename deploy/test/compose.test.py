@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import unittest
 
 DEPLOY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -49,6 +50,31 @@ def load_compose():
     return json.loads(result.stdout)
 
 
+def load_resolved(overrides=None):
+    """The compose model with variables interpolated: .env.example plus `overrides`, as an .env
+    written by the setup CLI would be. Variables of the calling shell never leak in."""
+    with open(ENV_EXAMPLE, encoding="utf-8") as handle:
+        text = handle.read()
+    text += "".join("%s=%s\n" % item for item in (overrides or {}).items())
+    environment = {k: v for k, v in os.environ.items() if not k.startswith(("LAWOSS_", "AUTH_", "HUB_"))}
+    with tempfile.TemporaryDirectory() as directory:
+        env_file = os.path.join(directory, "env")
+        with open(env_file, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        result = subprocess.run(
+            compose_command() + ["-f", COMPOSE, "--env-file", env_file, "config", "--format", "json"],
+            capture_output=True, text=True, env=environment)
+    if result.returncode != 0:
+        raise RuntimeError("compose config failed: " + result.stderr.strip())
+    return json.loads(result.stdout)
+
+
+def published(model):
+    """The proxy's published ports as (host_ip or None, published, target, protocol), sorted."""
+    return sorted((p.get("host_ip"), str(p["published"]), int(p["target"]), p["protocol"])
+                  for p in model["services"]["proxy"]["ports"])
+
+
 def load_env_example():
     values = {}
     with open(ENV_EXAMPLE, encoding="utf-8") as handle:
@@ -75,16 +101,39 @@ class ComposeTest(unittest.TestCase):
     def test_services_are_proxy_auth_and_hub(self):
         self.assertEqual(sorted(self.services), ["auth", "hub", "proxy"])
 
-    def test_only_proxy_publishes_ports_and_only_80_and_443(self):
+    def test_only_proxy_publishes_ports(self):
         for name, service in self.services.items():
-            ports = service.get("ports", [])
             if name != "proxy":
-                self.assertEqual(ports, [], name + " must not publish ports")
-                continue
-            self.assertTrue(ports)
-            for port in ports:
-                self.assertIn(str(port.get("published")), {"80", "443"})
-                self.assertIn(int(port["target"]), {80, 443})
+                self.assertEqual(service.get("ports", []), [], name + " must not publish ports")
+        self.assertTrue(self.services["proxy"].get("ports"))
+
+    def test_default_env_publishes_exactly_80_and_443_on_all_addresses(self):
+        # An .env written by 0.1.0 has none of the LAWOSS_*_PORT or LAWOSS_PROXY_BIND keys.
+        model = load_resolved()
+        self.assertEqual(published(model), [(None, "443", 443, "tcp"), (None, "443", 443, "udp"), (None, "80", 80, "tcp")])
+        for name, service in model["services"].items():
+            if name != "proxy":
+                self.assertEqual(service.get("ports", []), [], name)
+
+    def test_empty_keys_mean_the_defaults(self):
+        model = load_resolved({"LAWOSS_HTTP_PORT": "", "LAWOSS_HTTPS_PORT": "", "LAWOSS_PROXY_BIND": ""})
+        self.assertEqual(published(model), [(None, "443", 443, "tcp"), (None, "443", 443, "udp"), (None, "80", 80, "tcp")])
+
+    def test_custom_env_moves_the_host_ports_and_binds_the_address(self):
+        model = load_resolved({"LAWOSS_HTTP_PORT": "8080", "LAWOSS_HTTPS_PORT": "8443", "LAWOSS_PROXY_BIND": "127.0.0.1"})
+        self.assertEqual(published(model), [("127.0.0.1", "8080", 80, "tcp"), ("127.0.0.1", "8443", 443, "tcp"),
+                                            ("127.0.0.1", "8443", 443, "udp")])
+        for name, service in model["services"].items():
+            if name != "proxy":
+                self.assertEqual(service.get("ports", []), [], name)
+
+    def test_an_ipv6_bind_address_is_accepted(self):
+        model = load_resolved({"LAWOSS_PROXY_BIND": "::1"})
+        self.assertEqual({p[0] for p in published(model)}, {"::1"})
+
+    def test_only_the_proxy_targets_are_80_and_443(self):
+        for _, _, target, _ in published(load_resolved()):
+            self.assertIn(target, {80, 443})
 
     def test_every_service_is_hardened(self):
         for name, service in self.services.items():

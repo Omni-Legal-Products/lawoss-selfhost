@@ -14,7 +14,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import {
-  DNS_NAME, Failure, UsageError, VERSION, deployment, options, parseEnv, paths, randomKey, readEnvFile, requireImage, sha256,
+  DNS_NAME, Failure, UsageError, VERSION, deployment, proxyProblem, options, parseEnv, paths, randomKey, readEnvFile, requireImage, sha256,
   validateRecord, verifyAttestations, writeCaddyfile, writePrivateFile,
 } from '../lib.mjs';
 import {
@@ -111,6 +111,8 @@ const IMAGE_VARS = { auth: 'LAWOSS_AUTH_IMAGE', hub: 'LAWOSS_HUB_IMAGE', proxy: 
 function backupRelease(files, pin) {
   const vars = parseEnv(files.get('.env').toString('utf8'));
   if (!DNS_NAME.test(vars.LAWOSS_BASE ?? '')) throw new Failure('the backup\'s .env has no valid LAWOSS_BASE');
+  const badProxy = proxyProblem({ http: vars.LAWOSS_HTTP_PORT, https: vars.LAWOSS_HTTPS_PORT, bind: vars.LAWOSS_PROXY_BIND });
+  if (badProxy) throw new Failure(`the backup's .env has an invalid ${badProxy}; refusing it`);
   const version = vars.LAWOSS_RELEASE;
   if (!VERSION.test(version ?? '')) throw new Failure('the backup\'s .env has no valid LAWOSS_RELEASE');
   const recordFile = files.get(`host/releases/${version}.json`);

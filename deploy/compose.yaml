@@ -1,5 +1,6 @@
-# LAWOSS self-hosted stack: Caddy in front (ports 80 and 443 only, automatic certificates per
-# host), the authorization server and the MCP hub behind it on an internal network.
+# LAWOSS self-hosted stack: Caddy in front (the only published ports, 80 and 443 by default,
+# automatic certificates per host), the authorization server and the MCP hub behind it on an
+# internal network.
 # Lives in /opt/lawoss with .env (mode 0600), the Caddyfile rendered from Caddyfile.template and
 # brand/ (custom brand packs, read-only for auth); all are written by the setup CLI. No service
 # mounts the Docker socket.
@@ -20,12 +21,16 @@ services:
   proxy:
     <<: *hardening
     image: ${LAWOSS_PROXY_IMAGE:?LAWOSS_PROXY_IMAGE is required}
-    # Binding 80 and 443 is the only capability any service gets.
+    # Binding 80 and 443 inside the container is the only capability any service gets.
     cap_add: [NET_BIND_SERVICE]
+    # Host side: LAWOSS_HTTP_PORT (default 80), LAWOSS_HTTPS_PORT (default 443, tcp and udp) and
+    # LAWOSS_PROXY_BIND (default empty: all addresses; else one IPv4 or IPv6 literal). Set them
+    # when an existing proxy owns 80 and 443 and passes TLS through to this one. An .env without
+    # the keys publishes exactly 80 and 443. The CLI validates the values; Compose only reads them.
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
+      - "${LAWOSS_PROXY_BIND:+${LAWOSS_PROXY_BIND}:}${LAWOSS_HTTP_PORT:-80}:80"
+      - "${LAWOSS_PROXY_BIND:+${LAWOSS_PROXY_BIND}:}${LAWOSS_HTTPS_PORT:-443}:443"
+      - "${LAWOSS_PROXY_BIND:+${LAWOSS_PROXY_BIND}:}${LAWOSS_HTTPS_PORT:-443}:443/udp"
     volumes:
       - type: volume
         source: caddy-data

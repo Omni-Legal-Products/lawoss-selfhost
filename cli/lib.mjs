@@ -4,6 +4,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import {
   chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync,
 } from 'node:fs';
+import { isIP } from 'node:net';
 import { dirname, join } from 'node:path';
 import { parseArgs } from 'node:util';
 
@@ -45,6 +46,38 @@ export const ACCOUNT = /^[a-z0-9][a-z0-9_-]{2,63}$/;
 const SERVICE_ID = /^[a-z0-9]{1,32}$/;
 const IMAGE = /^[a-z0-9][a-z0-9._\/:-]{0,254}@sha256:[0-9a-f]{64}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
+
+// Host ports and bind address the proxy publishes (deploy/compose.yaml); .env keys, defaults 80, 443, all addresses.
+export const PROXY_DEFAULTS = Object.freeze({ http: '80', https: '443', bind: '' });
+const PORT = /^[1-9][0-9]{0,4}$/;
+const validPort = text => PORT.test(text) && Number(text) <= 65535;
+
+/**
+ * The first invalid key among the proxy settings, or undefined. A missing or empty value means the
+ * default; a port is a decimal integer 1-65535 without sign or leading zero, the two ports differ,
+ * and the bind address is empty or one IPv4 or IPv6 literal (no brackets, zone or host name).
+ * Callers name the key; the value is never echoed.
+ */
+export function proxyProblem({ http, https, bind } = {}) {
+  const httpPort = http || PROXY_DEFAULTS.http;
+  const httpsPort = https || PROXY_DEFAULTS.https;
+  if (!validPort(httpPort)) return 'LAWOSS_HTTP_PORT';
+  if (!validPort(httpsPort) || httpsPort === httpPort) return 'LAWOSS_HTTPS_PORT';
+  if (bind && (isIP(bind) === 0 || bind.includes('%'))) return 'LAWOSS_PROXY_BIND';
+  return undefined;
+}
+
+/** The proxy settings of an .env's variables with defaults applied; throws a Failure naming an invalid key. */
+export function proxySettings(vars) {
+  const raw = { http: vars.LAWOSS_HTTP_PORT, https: vars.LAWOSS_HTTPS_PORT, bind: vars.LAWOSS_PROXY_BIND };
+  const problem = proxyProblem(raw);
+  if (problem) throw new Failure(`.env has an invalid ${problem}`);
+  return {
+    httpPort: raw.http || PROXY_DEFAULTS.http,
+    httpsPort: raw.https || PROXY_DEFAULTS.https,
+    bind: raw.bind || PROXY_DEFAULTS.bind,
+  };
+}
 
 export function paths(root) {
   return {
@@ -188,6 +221,7 @@ export function deployment(root) {
     services,
     acmeEmail: typeof acmeEmail === 'string' && ACME_EMAIL.test(acmeEmail) ? acmeEmail : undefined,
     issuer: `https://auth.${base}`,
+    proxy: proxySettings(vars),
     release: vars.LAWOSS_RELEASE ?? 'unknown',
     images: { auth: vars.LAWOSS_AUTH_IMAGE, hub: vars.LAWOSS_HUB_IMAGE, proxy: vars.LAWOSS_PROXY_IMAGE },
   };
