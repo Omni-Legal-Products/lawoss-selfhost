@@ -51,13 +51,80 @@ against their provenance again. `hub/test/image-smoke.sh` checks a built image o
 ## Deployment files
 
 `deploy/compose.yaml` runs three hardened services (read-only root filesystems, all capabilities
-dropped, no new privileges, memory and process limits); only the proxy publishes ports 80 and 443.
-Check it with:
+dropped, no new privileges, memory and process limits); only the proxy publishes ports (80 and 443 by default; see
+"Behind an existing reverse proxy"). Check it with:
 
 ```sh
 python3 -m unittest -v deploy/test/compose.test.py
 docker compose -f deploy/compose.yaml --env-file deploy/.env.example config -q
 ```
+
+### Behind an existing reverse proxy
+
+By default the proxy publishes host ports 80 and 443 on all addresses. When another proxy already
+owns them, `init` can move the published ports and bind them to one address; Caddy keeps terminating
+TLS and issuing its own certificates. Three optional `.env` keys control it, and `init` always
+writes them so the file states the choice:
+
+| Key | `init` option | Default | Meaning |
+| --- | --- | --- | --- |
+| `LAWOSS_HTTP_PORT` | `--http-port N` | `80` | host port published for Caddy's port 80 |
+| `LAWOSS_HTTPS_PORT` | `--https-port N` | `443` | host port published for Caddy's 443, TCP and UDP |
+| `LAWOSS_PROXY_BIND` | `--proxy-bind ADDR` | empty (all addresses) | one IPv4 or IPv6 address, without brackets, that both ports bind to |
+
+Ports are decimal integers from 1 to 65535 without sign or leading zero, and the two differ. An
+`.env` written before these keys existed publishes exactly 80 and 443. `update`, `rollback`,
+`rotate` and `services` leave the keys as they are; `doctor` and `restore` refuse an invalid value
+and name the key.
+
+```sh
+lawoss-selfhost init --base lawoss.example.com --services crz,orsr --acme-email ops@example.com \
+  --http-port 8080 --https-port 8443 --proxy-bind 127.0.0.1 --record releases/VERSION.json --record-sha256 HEX
+```
+
+The existing proxy must pass TLS through unterminated, selecting by SNI, for the auth host and every
+service host of the deployment, and should forward plain HTTP on port 80 for the same hosts so that
+Caddy can answer certificate challenges and redirect to HTTPS. TLS-ALPN-01 works through the
+passthrough; HTTP-01 additionally needs the port 80 route. Public clients still use port 443: the
+issuer and resource URLs carry no port. `doctor` probes `127.0.0.1:443` with each host name as SNI,
+which behind a passthrough proxy is the proxy's public entry, the path users take. If the existing
+proxy does not listen on the host's loopback 443, `doctor` cannot reach the deployment from there.
+
+A minimal Traefik dynamic configuration (file provider) for the deployment above, whose hosts are
+`auth.lawoss.example.com` and `crz.lawoss.example.com`, `orsr.lawoss.example.com`.
+`HOST_ADDR` stands for the address under which the proxy's container reaches the host (for example
+a Docker bridge gateway); the ports are those given to `init` above, and `--proxy-bind` must be an
+address the proxy can reach.
+
+```yaml
+tcp:
+  routers:
+    lawoss-tls:
+      entryPoints: [websecure]
+      rule: HostSNIRegexp(`^.+\.lawoss\.example\.com$`) || HostSNI(`auth.lawoss.example.com`)
+      tls:
+        passthrough: true
+      service: lawoss-tls
+  services:
+    lawoss-tls:
+      loadBalancer:
+        servers:
+          - address: HOST_ADDR:8443
+http:
+  routers:
+    lawoss-http:
+      entryPoints: [web]
+      rule: Host(`auth.lawoss.example.com`) || HostRegexp(`^.+\.lawoss\.example\.com$`)
+      service: lawoss-http
+  services:
+    lawoss-http:
+      loadBalancer:
+        servers:
+          - url: http://HOST_ADDR:8080
+```
+
+Replace `lawoss.example.com` with the deployment's base. Check the rule syntax against the Traefik
+version in use.
 
 ## Setup CLI
 
@@ -89,6 +156,7 @@ again. It downloads nothing but the auth image.
 
 ```sh
 lawoss-selfhost init --base example.com --services crz,orsr --acme-email ops@example.com --record releases/VERSION.json --record-sha256 HEX
+                                           # optional: --http-port N --https-port N --proxy-bind ADDR
 lawoss-selfhost invite alice crz,orsr      # prints /opt/lawoss/handoff/alice.link
 lawoss-selfhost set-key FS_API_KEY         # the value is read from stdin, without echo
 lawoss-selfhost doctor

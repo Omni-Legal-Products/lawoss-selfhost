@@ -5,8 +5,8 @@
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import {
-  ACME_EMAIL, DNS_NAME, Failure, SERVICE_NAMES, UsageError, formatEnvValue, loadManifest, options, parseServiceList, paths,
-  providerKeys, randomKey, readRecord, renderCaddyfile, resourceUrl, sha256, verifyAttestations, verifyHostFiles, writePrivateFile,
+  ACME_EMAIL, DNS_NAME, Failure, PROXY_DEFAULTS, SERVICE_NAMES, UsageError, formatEnvValue, loadManifest, options, parseServiceList, paths,
+  providerKeys, proxyProblem, randomKey, readRecord, renderCaddyfile, resourceUrl, sha256, verifyAttestations, verifyHostFiles, writePrivateFile,
 } from '../lib.mjs';
 import { checkPack, checkPackArg, ensureBrandDir, installStaged, resolvePack } from './brand.mjs';
 import { keepRelease } from '../host.mjs';
@@ -41,6 +41,12 @@ export function generateConfig({ base, services, brand }) {
   return { auth, hub };
 }
 
+const PROXY_OPTION_HINTS = {
+  LAWOSS_HTTP_PORT: '--http-port must be a port number from 1 to 65535',
+  LAWOSS_HTTPS_PORT: 'the HTTP and HTTPS ports must each be from 1 to 65535 and must differ',
+  LAWOSS_PROXY_BIND: '--proxy-bind must be one IPv4 or IPv6 address (no brackets, no host name)',
+};
+
 export async function init(args, ctx) {
   const { values } = options(args, {
     base: { type: 'string' },
@@ -49,11 +55,22 @@ export async function init(args, ctx) {
     record: { type: 'string' },
     'record-sha256': { type: 'string' },
     'acme-email': { type: 'string' },
+    'http-port': { type: 'string' },
+    'https-port': { type: 'string' },
+    'proxy-bind': { type: 'string' },
   });
   const base = values.base ?? '';
   if (!DNS_NAME.test(base)) throw new UsageError('--base must be a lowercase DNS name');
   const acmeEmail = values['acme-email'] ?? '';
   if (!ACME_EMAIL.test(acmeEmail)) throw new UsageError('--acme-email must be the certificate contact e-mail (name@lowercase.domain)');
+  const proxy = {
+    http: values['http-port'] ?? PROXY_DEFAULTS.http,
+    https: values['https-port'] ?? PROXY_DEFAULTS.https,
+    bind: values['proxy-bind'] ?? PROXY_DEFAULTS.bind,
+  };
+  // An explicit empty or zero port is an error here; only a missing option means the default.
+  const problem = proxyProblem({ http: proxy.http || '0', https: proxy.https || '0', bind: proxy.bind });
+  if (problem) throw new UsageError(PROXY_OPTION_HINTS[problem]);
   if (values.brand !== undefined) checkPackArg(values.brand);
   if (!values.record || !values['record-sha256']) throw new UsageError('--record and --record-sha256 are required');
   const p = paths(ctx.root);
@@ -84,6 +101,10 @@ export async function init(args, ctx) {
       `LAWOSS_AUTH_IMAGE=${record.images.auth}`,
       `LAWOSS_HUB_IMAGE=${record.images.hub}`,
       `LAWOSS_PROXY_IMAGE=${record.images.proxy}`,
+      // Host ports and address of the proxy; the defaults publish 80 and 443 on all addresses.
+      `LAWOSS_HTTP_PORT=${proxy.http}`,
+      `LAWOSS_HTTPS_PORT=${proxy.https}`,
+      `LAWOSS_PROXY_BIND=${formatEnvValue(proxy.bind)}`,
       `AUTH_PUBLIC_HOST=${authHost}`,
       `AUTH_CONFIG_JSON=${formatEnvValue(JSON.stringify(auth))}`,
       `HUB_CONFIG_JSON=${formatEnvValue(JSON.stringify(hub))}`,
