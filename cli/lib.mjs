@@ -62,15 +62,19 @@ export function proxyProblem({ http, https, bind } = {}) {
   const httpPort = http || PROXY_DEFAULTS.http;
   const httpsPort = https || PROXY_DEFAULTS.https;
   if (!validPort(httpPort)) return 'LAWOSS_HTTP_PORT';
-  if (!validPort(httpsPort) || httpsPort === httpPort) return 'LAWOSS_HTTPS_PORT';
+  if (!validPort(httpsPort) || httpsPort === httpPort) return 'LAWOSS_HTTPS_PORT';  // equal ports are reported here
   if (bind && (isIP(bind) === 0 || bind.includes('%'))) return 'LAWOSS_PROXY_BIND';
   return undefined;
 }
 
+/** The first invalid proxy key among an .env's variables, or undefined. */
+export const proxyProblemOf = vars =>
+  proxyProblem({ http: vars.LAWOSS_HTTP_PORT, https: vars.LAWOSS_HTTPS_PORT, bind: vars.LAWOSS_PROXY_BIND });
+
 /** The proxy settings of an .env's variables with defaults applied; throws a Failure naming an invalid key. */
 export function proxySettings(vars) {
   const raw = { http: vars.LAWOSS_HTTP_PORT, https: vars.LAWOSS_HTTPS_PORT, bind: vars.LAWOSS_PROXY_BIND };
-  const problem = proxyProblem(raw);
+  const problem = proxyProblemOf(vars);
   if (problem) throw new Failure(`.env has an invalid ${problem}`);
   return {
     httpPort: raw.http || PROXY_DEFAULTS.http,

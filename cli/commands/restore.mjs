@@ -14,7 +14,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import {
-  DNS_NAME, Failure, UsageError, VERSION, deployment, proxyProblem, options, parseEnv, paths, randomKey, readEnvFile, requireImage, sha256,
+  DNS_NAME, Failure, UsageError, VERSION, deployment, proxyProblemOf, options, parseEnv, paths, randomKey, readEnvFile, requireImage, sha256,
   validateRecord, verifyAttestations, writeCaddyfile, writePrivateFile,
 } from '../lib.mjs';
 import {
@@ -77,8 +77,11 @@ async function dryRun(ctx, dir, privateKey) {
   const image = requireImage(existsSync(p.env) ? readEnvFile(p.env).LAWOSS_AUTH_IMAGE : undefined, 'auth');
   let ok = false;
   try {
-    unseal(JSON.parse(readFileSync(join(dir, 'host.enc.json'), 'utf8')), readFileSync(privateKey));
-    ok = await checkAuthPart(ctx, dir, privateKey, image);
+    const content = unseal(JSON.parse(readFileSync(join(dir, 'host.enc.json'), 'utf8')), readFileSync(privateKey));
+    // The same refusal as --apply, so that a dry run never passes a backup that --apply rejects.
+    const badProxy = proxyProblemOf(parseEnv(Buffer.from(content.files?.['.env'] ?? '', 'base64').toString('utf8')));
+    if (badProxy) ctx.err(`lawoss-selfhost: the backup's .env has an invalid ${badProxy}`);
+    ok = !badProxy && await checkAuthPart(ctx, dir, privateKey, image);
   } catch {
     ok = false;
   }
@@ -111,7 +114,7 @@ const IMAGE_VARS = { auth: 'LAWOSS_AUTH_IMAGE', hub: 'LAWOSS_HUB_IMAGE', proxy: 
 function backupRelease(files, pin) {
   const vars = parseEnv(files.get('.env').toString('utf8'));
   if (!DNS_NAME.test(vars.LAWOSS_BASE ?? '')) throw new Failure('the backup\'s .env has no valid LAWOSS_BASE');
-  const badProxy = proxyProblem({ http: vars.LAWOSS_HTTP_PORT, https: vars.LAWOSS_HTTPS_PORT, bind: vars.LAWOSS_PROXY_BIND });
+  const badProxy = proxyProblemOf(vars);
   if (badProxy) throw new Failure(`the backup's .env has an invalid ${badProxy}; refusing it`);
   const version = vars.LAWOSS_RELEASE;
   if (!VERSION.test(version ?? '')) throw new Failure('the backup\'s .env has no valid LAWOSS_RELEASE');

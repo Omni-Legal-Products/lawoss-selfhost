@@ -5,7 +5,7 @@
 import { existsSync, lstatSync, readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import {
-  Failure, UsageError, VERSION, VOLUMES, hostFileDifferences, keptRecord, options, parseEnv, paths, requireImage, writePrivateFile,
+  Failure, UsageError, VERSION, VOLUMES, hostFileDifferences, keptRecord, options, parseEnv, paths, proxyProblemOf, requireImage, writePrivateFile,
 } from '../lib.mjs';
 import { SNAPSHOT_FORMAT, copyHostFiles, extractVolume, installFile, startAndCheck, stopStack } from '../host.mjs';
 
@@ -23,6 +23,8 @@ function readSnapshot(root, dir) {
   try { env = readFileSync(join(host, '.env')); } catch { throw new Failure(`${join(host, '.env')} is missing`); }
   const vars = parseEnv(env.toString('utf8'));
   if (vars.LAWOSS_RELEASE !== meta.release) throw new Failure('the snapshot\'s .env names another release than its snapshot.json');
+  const badProxy = proxyProblemOf(vars);
+  if (badProxy) throw new Failure(`the snapshot's .env has an invalid ${badProxy}; refusing it`);
   const image = requireImage(vars.LAWOSS_AUTH_IMAGE, 'snapshot auth');
   for (const volume of VOLUMES)
     if (!lstatSync(join(dir, `${volume}.tar`), { throwIfNoEntry: false })?.isFile()) throw new Failure(`${join(dir, `${volume}.tar`)} is missing`);

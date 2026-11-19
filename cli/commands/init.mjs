@@ -43,7 +43,7 @@ export function generateConfig({ base, services, brand }) {
 
 const PROXY_OPTION_HINTS = {
   LAWOSS_HTTP_PORT: '--http-port must be a port number from 1 to 65535',
-  LAWOSS_HTTPS_PORT: '--https-port must be a port number from 1 to 65535 that differs from --http-port',
+  LAWOSS_HTTPS_PORT: 'the HTTP and HTTPS ports must each be from 1 to 65535 and must differ',
   LAWOSS_PROXY_BIND: '--proxy-bind must be one IPv4 or IPv6 address (no brackets, no host name)',
 };
 

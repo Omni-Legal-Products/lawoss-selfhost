@@ -26,7 +26,7 @@ describe('proxy validator', () => {
     assert.equal(proxyProblem({ http: '', https: '', bind: '' }), undefined);
     assert.equal(proxyProblem({ http: '8080', https: '8443', bind: '127.0.0.1' }), undefined);
     assert.equal(proxyProblem({ http: '1', https: '65535', bind: '::1' }), undefined);
-    assert.equal(proxyProblem({ bind: 'fd00::1' }), undefined);
+    assert.equal(proxyProblem({ bind: '2001:db8::1' }), undefined);
   });
 
   it('names the key of a bad value', () => {
@@ -36,7 +36,7 @@ describe('proxy validator', () => {
       assert.equal(proxyProblem({ https }), 'LAWOSS_HTTPS_PORT', https);
     assert.equal(proxyProblem({ http: '443' }), 'LAWOSS_HTTPS_PORT', 'the https default equals this http port');
     assert.equal(proxyProblem({ http: '8080', https: '8080' }), 'LAWOSS_HTTPS_PORT');
-    for (const bind of ['localhost', '[::1]', '1.2.3', '1.2.3.4.5', '0.0.0.0/0', 'fe80::1%eth0', ' 127.0.0.1', 'example.com'])
+    for (const bind of ['localhost', '[::1]', '1.2.3', '1.2.3.4.5', '0.0.0.0/0', '2001:db8::1%eth0', ' 127.0.0.1', 'example.com'])
       assert.equal(proxyProblem({ bind }), 'LAWOSS_PROXY_BIND', bind);
   });
 });
@@ -50,7 +50,7 @@ describe('init proxy options', () => {
   });
 
   it('writes custom ports and an IPv4 or IPv6 bind address', async () => {
-    for (const bind of ['127.0.0.1', '172.17.0.1', '::1']) {
+    for (const bind of ['127.0.0.1', '192.0.2.1', '::1']) {
       const t = setup();
       assert.equal(await t.cli(...initArgs(t), '--http-port', '8080', '--https-port', '8443', '--proxy-bind', bind), 0, t.err.join('\n'));
       assert.deepEqual(proxyVars(t.root), { LAWOSS_HTTP_PORT: '8080', LAWOSS_HTTPS_PORT: '8443', LAWOSS_PROXY_BIND: bind });
@@ -99,7 +99,7 @@ describe('deployment() reads the keys', () => {
 
   it('refuses an invalid value and names the key, never the value', async () => {
     const t = await initialized('crz');
-    for (const [key, value] of [['LAWOSS_HTTP_PORT', '70000'], ['LAWOSS_HTTPS_PORT', '80'], ['LAWOSS_PROXY_BIND', 'my-host']]) {
+    for (const [key, value] of [['LAWOSS_HTTP_PORT', '70000'], ['LAWOSS_HTTPS_PORT', '0080'], ['LAWOSS_PROXY_BIND', 'my-host']]) {
       edit(t.root, { LAWOSS_HTTP_PORT: '80', LAWOSS_HTTPS_PORT: '443', LAWOSS_PROXY_BIND: '', [key]: value });
       assert.throws(() => deployment(t.root), error => error.message.includes(key) && !error.message.includes(value), key);
       assert.equal(await t.cli('doctor'), 1, key);
@@ -159,7 +159,7 @@ describe('restore refuses a backup with an invalid proxy setting', () => {
     assert.deepEqual(proxyVars(good.root), CUSTOM);
 
     const original = unseal(JSON.parse(readFileSync(join(dir, 'host.enc.json'), 'utf8')), readFileSync(key));
-    for (const [name, value] of [['LAWOSS_HTTP_PORT', '0'], ['LAWOSS_HTTPS_PORT', '8080'], ['LAWOSS_PROXY_BIND', 'evil.example.com']]) {
+    for (const [name, value] of [['LAWOSS_HTTP_PORT', '70000'], ['LAWOSS_HTTPS_PORT', '8080'], ['LAWOSS_PROXY_BIND', 'evil.example.com']]) {
       const content = structuredClone(original);
       const env = setEnvVars(Buffer.from(content.files['.env'], 'base64').toString('utf8'), { ...CUSTOM, [name]: value });
       content.files['.env'] = Buffer.from(env).toString('base64');
@@ -172,6 +172,31 @@ describe('restore refuses a backup with an invalid proxy setting', () => {
       assert.equal(fresh.calls.length, 0, 'nothing was stopped or run');
       assert.equal(existsSync(join(fresh.root, '.env')), false);
       assert.deepEqual(readdirSync(fresh.root).filter(n => n === 'releases' || n === 'brand'), [], 'nothing written');
+      // A dry run (on the deployment that has an .env) refuses what --apply refuses.
+      assert.equal(await source.cli('restore', '--dry-run', '--private-key', key, dir), 1, `dry run ${name}`);
+      assert.ok(source.err.join('\n').includes(name) && !source.err.join('\n').includes(value), source.err.join('\n'));
+      assert.ok(source.out.every(line => line.startsWith('FAIL')), source.out.join('\n'));
+      assert.equal(source.calls.length, 0, 'the dry run ran no container');
+    }
+  });
+});
+
+describe('restore-snapshot refuses a snapshot with an invalid proxy setting', () => {
+  it('before anything is stopped or written, naming the key', async () => {
+    const t = setup();
+    assert.equal(await t.cli(...initArgs(t), '--http-port', '8080', '--https-port', '8443', '--proxy-bind', '127.0.0.1'), 0, t.err.join('\n'));
+    const next = installNextRelease(t.root);
+    assert.equal(await t.cli('update', '--to', '0.0.1', '--record', next.path, '--record-sha256', next.sha), 0, t.err.join('\n'));
+    const snapshot = t.out.find(line => line.startsWith(join(t.root, 'snapshots')));
+    const envPath = join(snapshot, 'host', '.env');
+    const good = readFileSync(envPath, 'utf8');
+    const before = readFileSync(join(t.root, '.env'));
+    for (const [name, value] of [['LAWOSS_HTTP_PORT', '70000'], ['LAWOSS_PROXY_BIND', 'evil.example.com']]) {
+      writeFileSync(envPath, setEnvVars(good, { [name]: value }));
+      assert.equal(await t.cli('restore-snapshot', snapshot), 1, name);
+      assert.ok(t.err.join('\n').includes(name) && !t.err.join('\n').includes(value), t.err.join('\n'));
+      assert.equal(t.calls.length, 0, 'nothing was stopped or run');
+      assert.deepEqual(readFileSync(join(t.root, '.env')), before);
     }
   });
 });
