@@ -3,8 +3,10 @@
 Self-hosted LAWOSS MCP servers with a branded login, deployable by an AI agent.
 
 > Status: early. This repository contains the authorization server (`auth/`), the MCP hub
-> (`hub/`), the Compose deployment (`deploy/`) and the setup CLI (`cli/`). No container images
-> are published yet.
+> (`hub/`), the Compose deployment (`deploy/`) and the setup CLI (`cli/`). Release 0.1.0 is
+> published: its auth and hub images are public in `ghcr.io/omni-legal-products`, pinned by digest
+> in its release record (see [Published releases](#published-releases)). The `lawoss-selfhost`
+> skill in the LAWOSS marketplace guides an AI agent through deploying it.
 
 ## Contents
 
@@ -153,6 +155,27 @@ needs `hub/` and `auth/` built: `npm ci --ignore-scripts && npm run build` in ea
 version and the catalog commit). It builds the auth and hub images, pushes them to
 `ghcr.io/omni-legal-products`, attests their build provenance and uploads `releases/<version>.json`
 (written by `deploy/release-record.mjs`). Running it publishes; adding or changing it does not.
+
+### Published releases
+
+| Version | Date | Commit | Release record SHA-256 |
+|---|---|---|---|
+| 0.1.0 | 2026-11-18 | `d041ee6fb116a65dde7201fb4c7d15bbb0b51256` | `6f96cd390968ecfee44c34057b5d61705391ffa91953791cb463d286edfcedde` |
+
+Images of 0.1.0:
+
+- auth: `ghcr.io/omni-legal-products/lawoss-auth@sha256:93e84a8a52d3286b07cc1fd231dc4d679db5e15ecf27daf8dc510876390bc1ea`
+- hub: `ghcr.io/omni-legal-products/lawoss-hub@sha256:c86179af9093b1b26405da51aedcd343e66b33bf90a61018a21e12e08e667ea7`
+- proxy: `caddy:2.11.9@sha256:4851e54a46b206517c574821bb5cc67f170d2156041e9fbc4c9193b45e84a75b`
+
+Check an image's build provenance with
+`gh attestation verify oci://IMAGE --repo Omni-Legal-Products/lawoss-selfhost`.
+
+The release record is not committed here. The workflow run keeps it as the `release-0.1.0`
+artifact until 2027-02-16; the lasting copy is in the LAWOSS marketplace, bundled with the
+`lawoss-selfhost` skill (`plugins/lawoss-selfhost/skills/lawoss-selfhost/release/0.1.0.json`) and
+pinned in its `releases.json`. Place it at `releases/0.1.0.json` in a checkout of the commit above
+and check its SHA-256 before use.
 
 ## Operator notes
 
