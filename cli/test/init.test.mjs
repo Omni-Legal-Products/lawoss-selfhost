@@ -28,6 +28,8 @@ describe('init', () => {
     const auth = JSON.parse(vars.AUTH_CONFIG_JSON);
     const hub = JSON.parse(vars.HUB_CONFIG_JSON);
     assert.equal(auth.origin, 'https://auth.example.com');
+    // Claude's hosted apps register with these exact web callbacks; loopback ones need no entry.
+    assert.deepEqual(auth.redirectUris, ['https://claude.ai/api/mcp/auth_callback', 'https://claude.com/api/mcp/auth_callback']);
     assert.equal(auth.dataDir, '/data');
     assert.ok(auth.cookieKeys.length >= 1 && auth.cookieKeys.every(k => k.length >= 32));
     const [jwk] = auth.jwks.keys;

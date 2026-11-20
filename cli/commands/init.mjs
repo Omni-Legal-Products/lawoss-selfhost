@@ -5,7 +5,7 @@
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import {
-  ACME_EMAIL, DNS_NAME, Failure, PROXY_DEFAULTS, SERVICE_NAMES, UsageError, formatEnvValue, loadManifest, options, parseServiceList, paths,
+  ACME_EMAIL, CLAUDE_CALLBACKS, DNS_NAME, Failure, PROXY_DEFAULTS, SERVICE_NAMES, UsageError, formatEnvValue, loadManifest, options, parseServiceList, paths,
   providerKeys, proxyProblem, randomKey, readRecord, renderCaddyfile, resourceUrl, sha256, verifyAttestations, verifyHostFiles, writePrivateFile,
 } from '../lib.mjs';
 import { checkPack, checkPackArg, ensureBrandDir, installStaged, resolvePack } from './brand.mjs';
@@ -35,6 +35,8 @@ export function generateConfig({ base, services, brand }) {
       scope: 'mcp:tools',
       secretHash: sha256(secrets[id]),
     }])),
+    // auth accepts these web callbacks besides loopback ones; `callbacks` changes the list.
+    redirectUris: [...CLAUDE_CALLBACKS],
     ...(brand !== undefined ? { brand } : {}),
   };
   const hub = { base, issuer, services, secrets };

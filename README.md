@@ -237,15 +237,15 @@ služieb na diaľku dáva plugin `lawoss-remote-skills` z LAWOSS Marketplace.
   <img src="docs/assets/lawoss-selfhost-oauth.png" alt="Sekvencia OAuth: aplikácia dostane 401, zaregistruje sa v auth, používateľ sa prihlási a udelí súhlas, aplikácia získa token a hub ho pri každom volaní overí v auth" width="100%">
 </picture>
 
-> [!WARNING]
-> **Známe obmedzenie: konektory Claude desktop a claude.ai sa zatiaľ nepripoja.** Auth server pri
-> dynamickej registrácii klienta prijme iba callback na loopback (`http://127.0.0.1`, `[::1]`,
-> `localhost`) alebo callback výslovne zapísaný v konfigurácii auth. Pri akceptačnom teste
-> pridanie vlastného konektora v Claude desktop zlyhalo pri registrácii a registrácia
-> s callbackom `https://claude.ai/api/mcp/auth_callback` skončila chybou
-> `400 invalid_client_metadata`. Nástroj
-> `lawoss-selfhost` vo vydaní 0.2.0 nemá voľbu, ktorou by sa callback zapísal. Overené funguje
-> Claude Code, ktorý používa loopback callback.
+> [!NOTE]
+> **Konektory Claude desktop a claude.ai.** Auth server pri dynamickej registrácii klienta prijme
+> callback na loopback (`http://127.0.0.1`, `[::1]`, `localhost`, ktorý používa Claude Code) a iba
+> tie webové callbacky, ktoré sú výslovne v jeho konfigurácii. `init` tam od tejto zmeny zapíše
+> callbacky aplikácií Claude: `https://claude.ai/api/mcp/auth_callback`
+> a `https://claude.com/api/mcp/auth_callback`. Vydania 0.2.0 a 0.2.1 ich nezapisovali, preto sa
+> v nich vlastný konektor v Claude desktop alebo na claude.ai nepripojil
+> (`400 invalid_client_metadata`). Nasadenie z týchto vydaní ich po aktualizácii na vydanie s touto
+> zmenou dostane príkazom `callbacks add claude`.
 
 ## Prevádzka
 
@@ -262,6 +262,7 @@ platia aj neskôr: agent pripraví príkaz, človek potvrdí.
 | Obnova | `restore --dry-run`, `restore --apply …` | skontroluje alebo obnoví zálohu, aj na novom serveri |
 | Rotácie | `rotate introspection`, `rotate cookies`, `rotate signing` | vymení tajomstvá služieb, kľúč súborov cookie alebo podpisový kľúč |
 | Služby | `services add ID`, `services remove ID` | zmení konfiguráciu auth, hubu aj Caddy; nový host potrebuje záznam DNS |
+| Callbacky aplikácií | `callbacks`, `callbacks add claude`, `callbacks add URL`, `callbacks remove URL` | presné webové callbacky, ktoré auth prijme pri registrácii aplikácie; reštartuje iba auth |
 | Účty | `invite`, `list`, `disable` | pozvánka s jednorazovým odkazom, prehľad, okamžité zablokovanie |
 | Kľúče | `set-key FS_API_KEY` | kľúč poskytovateľa zo skrytého vstupu v termináli človeka |
 | Značka | `brand check`, `brand preview`, `brand set` | kontrola, náhľad a nastavenie vlastného loga a farieb |

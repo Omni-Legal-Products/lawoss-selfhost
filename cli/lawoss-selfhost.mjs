@@ -21,6 +21,7 @@ import { setKey, unsetKey } from './commands/keys.mjs';
 import { restoreSnapshot } from './commands/restore-snapshot.mjs';
 import { rotate } from './commands/rotate.mjs';
 import { services } from './commands/services.mjs';
+import { callbacks } from './commands/callbacks.mjs';
 
 export const USAGE = `Usage: lawoss-selfhost COMMAND
   init --base BASE --services LIST --acme-email EMAIL [--brand PACK] [--http-port N] [--https-port N] [--proxy-bind ADDR] --record PATH --record-sha256 HEX
@@ -32,6 +33,8 @@ export const USAGE = `Usage: lawoss-selfhost COMMAND
   set-key NAME (value from stdin) | unset-key NAME
   rotate introspection|cookies|signing
   services add ID | services remove ID
+  callbacks [list] | callbacks add URL|claude | callbacks remove URL
+        (exact https callbacks auth accepts besides loopback; init allows Claude's)
   doctor
   backup init-key | backup | restore --dry-run [--private-key PATH] [BACKUP_DIR] | restore --apply --record-sha256 HEX [--private-key PATH] BACKUP_DIR
   update --to VERSION --record PATH --record-sha256 HEX | rollback
@@ -40,7 +43,7 @@ Environment: LAWOSS_ROOT (default /opt/lawoss).`;
 
 const COMMANDS = {
   init, brand, invite, grant, revoke, disable, list, 'set-key': setKey, 'unset-key': unsetKey, doctor, backup, restore, update, rollback,
-  'restore-snapshot': restoreSnapshot, rotate, services,
+  'restore-snapshot': restoreSnapshot, rotate, services, callbacks,
 };
 
 /** Runs one command with an injected context; returns the exit code. */

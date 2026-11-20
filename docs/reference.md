@@ -166,6 +166,7 @@ lawoss-selfhost restore-snapshot /opt/lawoss/snapshots/TIME
 lawoss-selfhost restore --apply --record-sha256 HEX --private-key /path/backup-private.pem /opt/lawoss/backups/TIME
 lawoss-selfhost rotate introspection       # or cookies, signing
 lawoss-selfhost services add judikaty      # or remove
+lawoss-selfhost callbacks add claude       # or add|remove URL, or list
 ```
 
 A release record (`releases/<version>.json`) names the commit, the image digests and the SHA-256 of
@@ -204,6 +205,15 @@ rendered from its template. All of it is checked before anything is stopped or w
 and `rotate signing` put a new key first and keep only the previous one (a signing key stays until
 the tokens it signed expire, 60 minutes). `services add|remove ID` changes both configurations,
 `LAWOSS_SERVICES` and the Caddyfile.
+
+`callbacks` manages the web callbacks that auth's dynamic client registration accepts besides
+loopback ones (`redirectUris` in `AUTH_CONFIG_JSON`). Each entry is one exact `https` URL, matched
+byte for byte, without user, query, fragment or wildcard. `init` allows the callbacks of Claude's
+hosted apps (claude.ai, Claude desktop and mobile): `https://claude.ai/api/mcp/auth_callback`
+and `https://claude.com/api/mcp/auth_callback`, the documented one and the domain it may move to.
+`callbacks add claude` adds them to a deployment created before they were the default;
+`callbacks remove URL` takes one out. A change recreates auth only. Claude Code uses a loopback
+callback and needs no entry.
 
 Brand packs: `brand check PACK` and `brand preview PACK` validate or preview a pack directory (or
 a built-in pack name) without installing it; before `init` they take `--record` for the auth image.

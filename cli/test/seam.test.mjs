@@ -63,7 +63,51 @@ async function assertSeam(t) {
   }
 }
 
+/** One request to the local auth as the proxy forwards it; redirects are not followed. */
+const toAuth = (port, { method = 'GET', path, body, type }) => new Promise((resolve, reject) => {
+  const req = request({ host: '127.0.0.1', port, method, path,
+    headers: { host: 'auth.example.com', 'x-forwarded-proto': 'https', ...(type ? { 'content-type': type } : {}) } }, res => {
+    const chunks = [];
+    res.on('data', chunk => chunks.push(chunk));
+    res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') }));
+  });
+  req.on('error', reject);
+  req.end(body);
+});
+
+/** What Claude's hosted apps send: a public client with their exact web callback. */
+const claudeRegistration = redirect => JSON.stringify({
+  client_name: 'Claude', redirect_uris: [redirect], token_endpoint_auth_method: 'none',
+  grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'],
+});
+
 describe('configuration seam between the CLI, the hub and auth', () => {
+  it('auth registers Claude with its web callback and starts the sign-in, and still refuses other web callbacks', async () => {
+    const t = await initialized('crz');
+    const auth = await startAuth(JSON.parse(readEnvFile(join(t.root, '.env')).AUTH_CONFIG_JSON));
+    try {
+      const callback = 'https://claude.ai/api/mcp/auth_callback';
+      const registered = await toAuth(auth.port, { method: 'POST', path: '/reg', type: 'application/json', body: claudeRegistration(callback) });
+      assert.equal(registered.status, 201, registered.body);
+      const client = JSON.parse(registered.body);
+      assert.deepEqual(client.redirect_uris, [callback]);
+      const refused = await toAuth(auth.port, { method: 'POST', path: '/reg', type: 'application/json',
+        body: claudeRegistration('https://app.example.org/oauth/callback') });
+      assert.equal(refused.status, 400, refused.body);
+      // The authorization request goes on to sign-in instead of failing on the callback.
+      const query = new URLSearchParams({
+        client_id: client.client_id, redirect_uri: callback, response_type: 'code', scope: 'mcp:tools', state: 'seam',
+        code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM', code_challenge_method: 'S256', resource: 'https://crz.example.com/mcp',
+      });
+      const authorize = await toAuth(auth.port, { path: `/auth?${query}` });
+      assert.equal(authorize.status, 303, authorize.body);
+      assert.match(authorize.headers.location ?? '', /\/interaction\//);
+    } finally {
+      await auth.close();
+    }
+  });
+
+
   it('init writes configurations that the real hub and auth accept, with matching introspection secrets', async () => {
     await assertSeam(await initialized('crz,orsr'));
   });
