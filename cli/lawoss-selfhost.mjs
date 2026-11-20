@@ -24,7 +24,8 @@ import { services } from './commands/services.mjs';
 import { callbacks } from './commands/callbacks.mjs';
 
 export const USAGE = `Usage: lawoss-selfhost COMMAND
-  init --base BASE --services LIST --acme-email EMAIL [--brand PACK] [--http-port N] [--https-port N] [--proxy-bind ADDR] --record PATH --record-sha256 HEX
+  init --base BASE --services LIST --acme-email EMAIL [--brand PACK] [--http-port N] [--https-port N] [--proxy-bind ADDR] [--no-claude-callbacks] --record PATH --record-sha256 HEX
+        (--no-claude-callbacks: do not allow Claude desktop and claude.ai's web callbacks)
         (--http-port, --https-port: host ports for Caddy's 80 and 443, default 80 and 443;
          --proxy-bind: one IPv4 or IPv6 address to bind them to, default all addresses)
   brand check PACK [--record PATH --record-sha256 HEX] | brand preview PACK [...] | brand set PACK

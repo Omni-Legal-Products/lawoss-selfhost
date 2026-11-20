@@ -22,7 +22,7 @@ export function signingKey() {
  * AUTH_CONFIG_JSON and HUB_CONFIG_JSON for one deployment (auth/src/server.ts Config, hub/src/main.ts
  * HubConfig). `brand` is auth's pack path; undefined means auth's default LAWOSS pack.
  */
-export function generateConfig({ base, services, brand }) {
+export function generateConfig({ base, services, brand, callbacks = CLAUDE_CALLBACKS }) {
   const issuer = `https://auth.${base}`;
   const secrets = Object.fromEntries(services.map(id => [id, randomKey(32)]));
   const auth = {
@@ -36,7 +36,7 @@ export function generateConfig({ base, services, brand }) {
       secretHash: sha256(secrets[id]),
     }])),
     // auth accepts these web callbacks besides loopback ones; `callbacks` changes the list.
-    redirectUris: [...CLAUDE_CALLBACKS],
+    redirectUris: [...callbacks],
     ...(brand !== undefined ? { brand } : {}),
   };
   const hub = { base, issuer, services, secrets };
@@ -60,6 +60,7 @@ export async function init(args, ctx) {
     'http-port': { type: 'string' },
     'https-port': { type: 'string' },
     'proxy-bind': { type: 'string' },
+    'no-claude-callbacks': { type: 'boolean' },
   });
   const base = values.base ?? '';
   if (!DNS_NAME.test(base)) throw new UsageError('--base must be a lowercase DNS name');
@@ -92,7 +93,8 @@ export async function init(args, ctx) {
   try {
     if (pack && !await checkPack(ctx, record.images.auth, pack))
       throw new Failure(`brand pack ${pack.label} did not pass auth's check; nothing was written`);
-    const { auth, hub } = generateConfig({ base, services, brand: pack?.config });
+    const callbacks = values['no-claude-callbacks'] ? [] : CLAUDE_CALLBACKS;
+    const { auth, hub } = generateConfig({ base, services, brand: pack?.config, callbacks });
     const lines = [
       '# Written by lawoss-selfhost init. Mode 0600, owned by root. Never print, paste or copy this file.',
       `LAWOSS_BASE=${base}`,
@@ -129,5 +131,10 @@ export async function init(args, ctx) {
   }
 
   for (const host of [authHost, ...serviceHosts]) ctx.out(host);
+  // stdout stays the host names for DNS; what auth will accept besides loopback goes to stderr.
+  const allowed = values['no-claude-callbacks'] ? [] : CLAUDE_CALLBACKS;
+  ctx.err(allowed.length
+    ? `lawoss-selfhost init: auth accepts these web callbacks for Claude desktop and claude.ai: ${allowed.join(', ')}; take one out with callbacks remove URL`
+    : 'lawoss-selfhost init: auth accepts no web callback, so Claude desktop and claude.ai will not connect; allow them later with callbacks add claude');
   return 0;
 }

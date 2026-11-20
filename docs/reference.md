@@ -154,7 +154,7 @@ again. It downloads nothing but the auth image.
 
 ```sh
 lawoss-selfhost init --base example.com --services crz,orsr --acme-email ops@example.com --record releases/VERSION.json --record-sha256 HEX
-                                           # optional: --http-port N --https-port N --proxy-bind ADDR
+                                           # optional: --http-port N --https-port N --proxy-bind ADDR --no-claude-callbacks
 lawoss-selfhost invite alice crz,orsr      # prints /opt/lawoss/handoff/alice.link
 lawoss-selfhost set-key FS_API_KEY         # the value is read from stdin, without echo
 lawoss-selfhost doctor
@@ -210,8 +210,9 @@ the tokens it signed expire, 60 minutes). `services add|remove ID` changes both 
 loopback ones (`redirectUris` in `AUTH_CONFIG_JSON`). Each entry is one exact `https` URL, matched
 byte for byte, without user, query, fragment or wildcard. `init` allows the callbacks of Claude's
 hosted apps (claude.ai, Claude desktop and mobile): `https://claude.ai/api/mcp/auth_callback`
-and `https://claude.com/api/mcp/auth_callback`, the documented one and the domain it may move to.
-`callbacks add claude` adds them to a deployment created before they were the default;
+and `https://claude.com/api/mcp/auth_callback`, the documented one and the domain it may move to,
+and names them on stderr (stdout stays the host names for DNS). `init --no-claude-callbacks`
+allows none. `callbacks add claude` adds them to a deployment created before they were the default;
 `callbacks remove URL` takes one out. A change recreates auth only. Claude Code uses a loopback
 callback and needs no entry.
 
