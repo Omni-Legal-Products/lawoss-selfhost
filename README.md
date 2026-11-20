@@ -137,38 +137,33 @@ Editovateľné zdroje diagramov: [prístup používateľa](docs/diagrams/lawoss-
 - **Podmienky certifikačnej autority** prijímate vy.
 
 > [!NOTE]
-> Skill v katalógu `main` dnes pripína vydanie **0.1.0**. Pripnutie vydania **0.2.0** a postup
-> za existujúcou reverznou proxy sú v posudzovaní
-> v [lawoss-marketplace#58](https://github.com/Omni-Legal-Products/lawoss-marketplace/pull/58).
-> Skill vždy použije presne vydanie, ktoré pripína, a hodnoty nepreberá z internetu.
+> Skill v katalógu `main` dnes pripína vydanie **0.3.0** vrátane postupu za existujúcou reverznou
+> proxy. Skill vždy použije presne vydanie, ktoré pripína, a hodnoty nepreberá z internetu.
 
 ## Ručný postup v skratke
 
-Agent robí presne toto, len s kontrolami a bránami. Príklad pre vydanie 0.2.0; commit a odtlačok
+Agent robí presne toto, len s kontrolami a bránami. Príklad pre vydanie 0.3.0; commit a odtlačok
 berte vždy z tabuľky [Publikované vydania](#publikované-vydania) alebo zo skillu.
 
-Záznam vydania stiahnete zo skillu v LAWOSS Marketplace. Na `main` je dnes len záznam 0.1.0
-(`release/0.1.0.json`). Záznam 0.2.0 je zatiaľ vo vetve
-[lawoss-marketplace#58](https://github.com/Omni-Legal-Products/lawoss-marketplace/pull/58)
-a v artefakte `release-0.2.0` workflowu vydania (do 2027-02-17). Pri 0.1.0 použite jej commit
-a odtlačok a vynechajte voľby proxy, ktoré pribudli až v 0.2.0.
+Záznam vydania stiahnete zo skillu v LAWOSS Marketplace
+(`plugins/lawoss-selfhost/skills/lawoss-selfhost/release/0.3.0.json` na `main`).
 
 ```bash
 # 1. Pripnutý commit
 git clone https://github.com/Omni-Legal-Products/lawoss-selfhost.git ~/lawoss-selfhost
 cd ~/lawoss-selfhost
-git checkout --detach 29440f8af25792e42b4c764f8334ec9be239439b
+git checkout --detach 60ff58dfdd6a70f3534f9fe0ff05f3344563cca6
 
-# 2. Záznam vydania zo skillu (plugins/lawoss-selfhost/skills/lawoss-selfhost/release/0.2.0.json)
-sha256sum ~/lawoss-0.2.0.json   # musí byť 425865a7262019e6d77c7b847b9a42cdc8b0c4ae02b9358dd3ed39ccbc5f38b3
+# 2. Záznam vydania zo skillu (plugins/lawoss-selfhost/skills/lawoss-selfhost/release/0.3.0.json)
+sha256sum ~/lawoss-0.3.0.json   # musí byť 329d5bd454581e2bc16de0bd54d1003fbaf4516c5b251146a4429271881ea22d
 
 # 3. Súbory vydania do /opt/lawoss (overí odtlačky, stiahne iba obraz auth)
-sudo sh deploy/install-host-files.sh ~/lawoss-0.2.0.json 425865a7262019e6d77c7b847b9a42cdc8b0c4ae02b9358dd3ed39ccbc5f38b3 .
+sudo sh deploy/install-host-files.sh ~/lawoss-0.3.0.json 329d5bd454581e2bc16de0bd54d1003fbaf4516c5b251146a4429271881ea22d .
 
-# 4. Tajomstvá a konfigurácia (vypíše iba názvy hostiteľov)
+# 4. Tajomstvá a konfigurácia (vypíše názvy hostiteľov; povolený callback Claude ide na stderr)
 sudo /opt/lawoss/bin/lawoss-selfhost init --base lawoss.example.com --services slovlex,orsr,judikaty \
-  --acme-email ops@example.com --record ~/lawoss-0.2.0.json \
-  --record-sha256 425865a7262019e6d77c7b847b9a42cdc8b0c4ae02b9358dd3ed39ccbc5f38b3
+  --acme-email ops@example.com --record ~/lawoss-0.3.0.json \
+  --record-sha256 329d5bd454581e2bc16de0bd54d1003fbaf4516c5b251146a4429271881ea22d
 
 # 5. Spustenie a kontrola (iba riadky PASS a FAIL)
 sudo docker compose -f /opt/lawoss/compose.yaml --env-file /opt/lawoss/.env up -d
@@ -246,7 +241,7 @@ služieb na diaľku dáva plugin `lawoss-remote-skills` z LAWOSS Marketplace.
 > `callbacks remove URL`; tým sa odpoja aj už pripojené konektory Claude pri ďalšom prihlásení.
 > Vydania 0.2.0 a 0.2.1 ho nezapisovali, preto sa v nich vlastný konektor v Claude desktop alebo
 > na claude.ai nepripojil (`400 invalid_client_metadata`). Nasadenie z týchto vydaní ho po
-> aktualizácii na vydanie s touto zmenou dostane príkazom `callbacks add claude`. Aplikácie Claude
+> aktualizácii na vydanie 0.3.0 dostane príkazom `callbacks add claude`. Aplikácie Claude
 > sa k serveru pripájajú z internetu cez štandardný port HTTPS 443.
 
 ## Prevádzka
@@ -311,10 +306,28 @@ Podrobnosti a hlásenie zraniteľností: [SECURITY.md](SECURITY.md).
 
 | Verzia | Dátum | Commit | SHA-256 záznamu vydania |
 |---|---|---|---|
+| 0.3.0 | 2026-11-20 | `60ff58dfdd6a70f3534f9fe0ff05f3344563cca6` | `329d5bd454581e2bc16de0bd54d1003fbaf4516c5b251146a4429271881ea22d` |
+| 0.2.1 | 2026-11-20 | `9efec09a95c513ab88d9a1116bee96e1c6de40c1` | `a8406c8ed317b666968b49dd8f1907276e7482b0a91181be003cef85478ae84b` |
 | 0.2.0 | 2026-11-19 | `29440f8af25792e42b4c764f8334ec9be239439b` | `425865a7262019e6d77c7b847b9a42cdc8b0c4ae02b9358dd3ed39ccbc5f38b3` |
 | 0.1.0 | 2026-11-18 | `d041ee6fb116a65dde7201fb4c7d15bbb0b51256` | `6f96cd390968ecfee44c34057b5d61705391ffa91953791cb463d286edfcedde` |
 
-0.2.0 pridáva voliteľné porty proxy (pozri [Za existujúcou reverznou proxy](#za-existujúcou-reverznou-proxy)).
+0.3.0 umožňuje pripojiť konektory Claude desktop a claude.ai: `init` povolí callback Claude
+a príkaz `callbacks` zoznam spravuje (pozri poznámku v [Pripojenie aplikácie](#pripojenie-aplikácie)
+a [technickú referenciu](docs/reference.md)). 0.2.1 sa od 0.2.0 líši iba dokumentáciou; vzniklo na test
+aktualizácie a návratu a katalóg ho nepripína. 0.2.0 pridáva voliteľné porty proxy (pozri
+[Za existujúcou reverznou proxy](#za-existujúcou-reverznou-proxy)).
+
+Obrazy vydania 0.3.0:
+
+- auth: `ghcr.io/omni-legal-products/lawoss-auth@sha256:2f7bbca3b4052d754b1bcccf0920e8a25795f5b63df8d1c908f27bcbc3feeb08`
+- hub: `ghcr.io/omni-legal-products/lawoss-hub@sha256:9aa863847415cf4a3fb48b6b133d249c0cce2a96b64679f2632c4536a28ebab2`
+- proxy: `caddy:2.11.9@sha256:4851e54a46b206517c574821bb5cc67f170d2156041e9fbc4c9193b45e84a75b`
+
+Obrazy vydania 0.2.1:
+
+- auth: `ghcr.io/omni-legal-products/lawoss-auth@sha256:c131e717a85fc9460696b29237a446556bc27855e23f4506739c595f0189e8af`
+- hub: `ghcr.io/omni-legal-products/lawoss-hub@sha256:8987f9a10ebb62e72f20a0a0ddad36714155022bd1d3baf09e7b35ada915dc90`
+- proxy: `caddy:2.11.9@sha256:4851e54a46b206517c574821bb5cc67f170d2156041e9fbc4c9193b45e84a75b`
 
 Obrazy vydania 0.2.0:
 
@@ -332,7 +345,10 @@ Pôvod obrazu overíte príkazom
 `gh attestation verify oci://IMAGE --repo Omni-Legal-Products/lawoss-selfhost`.
 
 Záznamy vydaní nie sú v tomto repozitári. Každý beh workflowu vydania ich uchová ako artefakt
-`release-<verzia>` na 90 dní (0.1.0 do 2027-02-16, 0.2.0 do 2027-02-17). Trvalá kópia je v LAWOSS
+`release-<verzia>` na 90 dní (0.1.0 do 2027-02-16, 0.2.0 do 2027-02-17, 0.2.1 a 0.3.0
+do 2027-02-18). Workflow 0.3.0 bežal dvakrát; platí záznam behu, ktorý pripína katalóg (SHA-256
+v tabuľke), a ten zodpovedá aj značke `0.3.0` v registri. Záznam 0.2.1 existuje len v artefakte.
+Trvalá kópia je v LAWOSS
 Marketplace: skill `lawoss-selfhost` obsahuje záznam vydania, ktoré pripína
 (`plugins/lawoss-selfhost/skills/lawoss-selfhost/release/<verzia>.json`), a `releases.json`
 pripína jeho SHA-256; záznamy starších vydaní ostávajú v histórii marketplace. Záznam uložte ako
