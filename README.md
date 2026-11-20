@@ -130,8 +130,14 @@ Editovateľné zdroje diagramov: [architektúra](docs/diagrams/lawoss-selfhost-a
 
 ## Ručný postup v skratke
 
-Agent robí presne toto, len s kontrolami a bránami. Príklad pre vydanie 0.2.0; hodnoty `VERZIA`,
-commit a odtlačok berte vždy z tabuľky [Publikované vydania](#publikované-vydania) alebo zo skillu.
+Agent robí presne toto, len s kontrolami a bránami. Príklad pre vydanie 0.2.0; commit a odtlačok
+berte vždy z tabuľky [Publikované vydania](#publikované-vydania) alebo zo skillu.
+
+Záznam vydania stiahnete zo skillu v LAWOSS Marketplace. Na `main` je dnes len záznam 0.1.0
+(`release/0.1.0.json`). Záznam 0.2.0 je zatiaľ vo vetve
+[lawoss-marketplace#58](https://github.com/Omni-Legal-Products/lawoss-marketplace/pull/58)
+a v artefakte `release-0.2.0` workflowu vydania (do 2027-02-17). Pri 0.1.0 použite jej commit
+a odtlačok a vynechajte voľby proxy, ktoré pribudli až v 0.2.0.
 
 ```bash
 # 1. Pripnutý commit
@@ -171,8 +177,8 @@ obnoviť. Podrobnosti ku každému príkazu sú v [technickej referencii](docs/r
 ### Za existujúcou reverznou proxy
 
 Ak porty 80 a 443 už drží Traefik (napríklad v Dokploy alebo Coolify), Caddy beží za ním. `init`
-dostane navyše dva voľné porty a adresu, na ktorej kontajner proxy dosiahne server
-(od vydania 0.2.0):
+dostane navyše dva voľné porty a adresu, na ktorej kontajner proxy dosiahne server.
+Tieto voľby má až vydanie 0.2.0 (o jeho zázname pozri [Ručný postup v skratke](#ručný-postup-v-skratke)):
 
 ```bash
 sudo /opt/lawoss/bin/lawoss-selfhost init ... --http-port 18080 --https-port 18443 --proxy-bind HOST_ADDR
@@ -220,9 +226,10 @@ služieb na diaľku dáva plugin `lawoss-remote-skills` z LAWOSS Marketplace.
 > [!WARNING]
 > **Známe obmedzenie: konektory Claude desktop a claude.ai sa zatiaľ nepripoja.** Auth server pri
 > dynamickej registrácii klienta prijme iba callback na loopback (`http://127.0.0.1`, `[::1]`,
-> `localhost`) alebo callback výslovne zapísaný v konfigurácii auth. Vlastný konektor v Claude
-> desktop a claude.ai používa callback `https://claude.ai/api/mcp/auth_callback`, preto
-> registrácia skončí chybou `400 invalid_client_metadata` a pripojenie zlyhá. Nástroj
+> `localhost`) alebo callback výslovne zapísaný v konfigurácii auth. Pri akceptačnom teste
+> pridanie vlastného konektora v Claude desktop zlyhalo pri registrácii a registrácia
+> s callbackom `https://claude.ai/api/mcp/auth_callback` skončila chybou
+> `400 invalid_client_metadata`. Nástroj
 > `lawoss-selfhost` vo vydaní 0.2.0 nemá voľbu, ktorou by sa callback zapísal. Overené funguje
 > Claude Code, ktorý používa loopback callback.
 

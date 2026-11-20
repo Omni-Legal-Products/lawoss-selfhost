@@ -3,7 +3,8 @@
 This is the technical reference for maintainers and for operators who deploy by hand. The
 [README](../README.md) explains what the project is, how an AI agent deploys it with the
 `lawoss-selfhost` skill, how to operate it, its security model and the published releases.
-This file used to be the README; its content is unchanged apart from headings and links.
+This file used to be the README. Its sections are unchanged, except that the status note,
+the published releases and the operator notes now live in the README (in Slovak).
 
 ## Contents
 
