@@ -38,9 +38,22 @@ Na server sa nainštalujú tri kontajnery a nástroj na správu:
 | **hub** | Spúšťa pre prihlásených používateľov tie isté preskúmané služby LAWOSS ako lokálne pluginy, každému používateľovi vlastné procesy s limitmi volaní a súbežnosti. Každá služba má vlastný host a je samostatným OAuth zdrojom. |
 | **`lawoss-selfhost`** | Nástroj v `/opt/lawoss`: `init`, `doctor`, účty, kľúče, zálohy, aktualizácie, rotácie. Tajomstvá generuje na serveri a nikdy ich nevypisuje. |
 
+**Prístup používateľa.** Aplikácia sa pripája iba na Caddy. Ten pošle host `auth.<základ>` na
+prihlasovací server a hosty služieb na hub. Hub overí každý token v auth a zavolá runtime služby,
+ktorý má každý používateľ vlastný.
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lawoss-selfhost-architecture-dark.png">
-  <img src="docs/assets/lawoss-selfhost-architecture.png" alt="Architektúra: aplikácia sa cez HTTPS pripája na Caddy, ten smeruje auth host na prihlasovací server a hosty služieb na hub; hub overuje tokeny v auth a jeho runtimy čítajú verejné zdroje" width="100%">
+  <img src="docs/assets/lawoss-selfhost-architecture.png" alt="Prístup používateľa: aplikácia sa cez HTTPS pripája na Caddy, ten smeruje auth host na prihlasovací server a hosty služieb na hub; hub overuje tokeny v auth a volá runtimy služieb, každému používateľovi vlastné" width="100%">
+</picture>
+
+**Server, správa a okolie.** Správca s agentom pracuje cez SSH s nástrojom `lawoss-selfhost`.
+Tajomstvá a zálohy sú v `/opt/lawoss`, súkromný kľúč záloh patrí mimo servera. Zo servera
+do internetu idú iba žiadosti o certifikáty, sťahovanie obrazov vydania a dotazy na verejné zdroje.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/lawoss-selfhost-server-dark.png">
+  <img src="docs/assets/lawoss-selfhost-server.png" alt="Server, správa a okolie: správca a agent ovládajú server cez SSH nástrojom lawoss-selfhost, ktorý zapisuje tajomstvá a zálohy do /opt/lawoss a riadi kontajnery; kontajnery sťahujú obrazy, certifikáty a dáta verejných zdrojov; súkromný kľúč záloh je mimo servera" width="100%">
 </picture>
 
 Dostupné služby (identifikátory pre `--services`): `crz`, `disq`, `eurlex`, `fs`, `judikaty`,
@@ -49,7 +62,8 @@ Dostupné služby (identifikátory pre `--services`): `crz`, `disq`, `eurlex`, `
 `judikaty`, `eurlex` a `crz` majú voliteľné kľúče. Nástroje, ktoré ukladajú súbory, sú na diaľku
 vypnuté a ostávajú v lokálnych pluginoch.
 
-Editovateľné zdroje diagramov: [architektúra](docs/diagrams/lawoss-selfhost-architecture.html) ·
+Editovateľné zdroje diagramov: [prístup používateľa](docs/diagrams/lawoss-selfhost-architecture.html) ·
+[server a okolie](docs/diagrams/lawoss-selfhost-server.html) ·
 [prihlásenie OAuth](docs/diagrams/lawoss-selfhost-oauth.html) ·
 [15 krokov](docs/diagrams/lawoss-selfhost-steps.html) ·
 [za existujúcou proxy](docs/diagrams/lawoss-selfhost-existing-proxy.html)
