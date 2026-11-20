@@ -208,11 +208,11 @@ the tokens it signed expire, 60 minutes). `services add|remove ID` changes both 
 
 `callbacks` manages the web callbacks that auth's dynamic client registration accepts besides
 loopback ones (`redirectUris` in `AUTH_CONFIG_JSON`). Each entry is one exact `https` URL, matched
-byte for byte, without user, query, fragment or wildcard. `init` allows the callbacks of Claude's
-hosted apps (claude.ai, Claude desktop and mobile): `https://claude.ai/api/mcp/auth_callback`
-and `https://claude.com/api/mcp/auth_callback`, the documented one and the domain it may move to,
-and names them on stderr (stdout stays the host names for DNS). `init --no-claude-callbacks`
-allows none. `callbacks add claude` adds them to a deployment created before they were the default;
+byte for byte, without user, query, fragment or wildcard. `init` allows the one documented
+callback of Claude's hosted apps (claude.ai, Claude desktop and mobile),
+`https://claude.ai/api/mcp/auth_callback`, and names it on stderr (stdout stays the host names for
+DNS). `init --no-claude-callbacks` allows none. `callbacks add claude` adds it to a deployment
+created before it was the default;
 `callbacks remove URL` takes one out. A change recreates auth only. Claude Code uses a loopback
 callback and needs no entry.
 

@@ -134,7 +134,7 @@ export async function init(args, ctx) {
   // stdout stays the host names for DNS; what auth will accept besides loopback goes to stderr.
   const allowed = values['no-claude-callbacks'] ? [] : CLAUDE_CALLBACKS;
   ctx.err(allowed.length
-    ? `lawoss-selfhost init: auth accepts these web callbacks for Claude desktop and claude.ai: ${allowed.join(', ')}; take one out with callbacks remove URL`
-    : 'lawoss-selfhost init: auth accepts no web callback, so Claude desktop and claude.ai will not connect; allow them later with callbacks add claude');
+    ? `lawoss-selfhost init: auth accepts the web callback of Claude desktop and claude.ai: ${allowed.join(', ')}; take it out with callbacks remove URL`
+    : 'lawoss-selfhost init: auth accepts no web callback, so Claude desktop and claude.ai will not connect; allow it later with callbacks add claude');
   return 0;
 }

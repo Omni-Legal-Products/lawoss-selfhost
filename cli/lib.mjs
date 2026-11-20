@@ -234,11 +234,11 @@ export function deployment(root) {
 export const resourceUrl = (id, base) => `https://${id}.${base}/mcp`;
 
 /**
- * The exact web callbacks of Claude's hosted apps (claude.ai, Claude desktop and mobile), which
- * register with dynamic client registration as public clients. Anthropic documents the claude.ai
- * one and says it may move to claude.com. Loopback callbacks (Claude Code) need no entry.
+ * The exact web callback of Claude's hosted apps (claude.ai, Claude desktop and mobile), which
+ * register with dynamic client registration as public clients; Anthropic's connector documentation
+ * names this one URL. Loopback callbacks (Claude Code) need no entry.
  */
-export const CLAUDE_CALLBACKS = Object.freeze(['https://claude.ai/api/mcp/auth_callback', 'https://claude.com/api/mcp/auth_callback']);
+export const CLAUDE_CALLBACKS = Object.freeze(['https://claude.ai/api/mcp/auth_callback']);
 
 /** AUTH_CONFIG_JSON and HUB_CONFIG_JSON of an .env text, parsed; their values are never printed. */
 export function readConfigs(text) {

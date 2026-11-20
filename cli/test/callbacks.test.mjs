@@ -10,14 +10,14 @@ const recreateAuth = t => [...composeBase(t.root), 'up', '-d', '--wait', '--wait
 const quiet = t => assert.doesNotMatch([...t.out, ...t.err].join('\n'), SECRETISH);
 
 describe('callbacks', () => {
-  it('Claude\'s two callbacks are the documented exact URLs', () => {
-    assert.deepEqual(CLAUDE_CALLBACKS, ['https://claude.ai/api/mcp/auth_callback', 'https://claude.com/api/mcp/auth_callback']);
+  it('Claude\'s callback is the one documented exact URL', () => {
+    assert.deepEqual(CLAUDE_CALLBACKS, ['https://claude.ai/api/mcp/auth_callback']);
   });
 
   it('lists the allowed web callbacks, Claude\'s after init', async () => {
     const t = await initialized('crz');
     assert.equal(await t.cli('callbacks'), 0, t.err.join('\n'));
-    assert.deepEqual(t.out.slice(-2), CLAUDE_CALLBACKS);
+    assert.deepEqual(t.out.slice(-CLAUDE_CALLBACKS.length), CLAUDE_CALLBACKS);
     assert.equal(t.calls.length, 0, 'listing runs no container');
     quiet(t);
   });
@@ -36,10 +36,9 @@ describe('callbacks', () => {
     quiet(t);
   });
 
-  it('add claude restores Claude\'s callbacks on a deployment made without them', async () => {
+  it('add claude restores Claude\'s callback on a deployment made without it', async () => {
     const t = await initialized('crz');
     assert.equal(await t.cli('callbacks', 'remove', CLAUDE_CALLBACKS[0]), 0, t.err.join('\n'));
-    assert.equal(await t.cli('callbacks', 'remove', CLAUDE_CALLBACKS[1]), 0, t.err.join('\n'));
     assert.deepEqual(authConfig(t).redirectUris, []);
     t.calls.length = 0;
     t.out.length = 0;
@@ -61,10 +60,10 @@ describe('callbacks', () => {
   it('remove takes one exact callback out and refuses one that is not there', async () => {
     const t = await initialized('crz');
     t.out.length = 0;
-    assert.equal(await t.cli('callbacks', 'remove', CLAUDE_CALLBACKS[1]), 0, t.err.join('\n'));
-    assert.deepEqual(authConfig(t).redirectUris, [CLAUDE_CALLBACKS[0]]);
+    assert.equal(await t.cli('callbacks', 'remove', CLAUDE_CALLBACKS[0]), 0, t.err.join('\n'));
+    assert.deepEqual(authConfig(t).redirectUris, []);
     assert.deepEqual(t.calls, [recreateAuth(t)]);
-    assert.deepEqual(t.out, [`removed ${CLAUDE_CALLBACKS[1]}`]);
+    assert.deepEqual(t.out, [`removed ${CLAUDE_CALLBACKS[0]}`]);
     t.calls.length = 0;
     assert.equal(await t.cli('callbacks', 'remove', 'https://app.example.org/oauth/callback'), 1);
     assert.equal(t.calls.length, 0);
