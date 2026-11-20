@@ -16,7 +16,8 @@ function secretsOf(root) {
   const found = new Set();
   const walk = value => {
     if (typeof value === 'string') { if (value.length >= 16) found.add(value); }
-    else if (value && typeof value === 'object') for (const item of Object.values(value)) walk(item);
+    // redirectUris are public callback URLs, which init names on purpose.
+    else if (value && typeof value === 'object') for (const [key, item] of Object.entries(value)) { if (key !== 'redirectUris') walk(item); }
   };
   for (const [name, value] of Object.entries(readEnvFile(join(root, '.env')))) {
     if (!value || /^LAWOSS_|^AUTH_PUBLIC_HOST$/.test(name)) continue;

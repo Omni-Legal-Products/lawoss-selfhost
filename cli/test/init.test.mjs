@@ -28,6 +28,8 @@ describe('init', () => {
     const auth = JSON.parse(vars.AUTH_CONFIG_JSON);
     const hub = JSON.parse(vars.HUB_CONFIG_JSON);
     assert.equal(auth.origin, 'https://auth.example.com');
+    // Claude's hosted apps register with these exact web callbacks; loopback ones need no entry.
+    assert.deepEqual(auth.redirectUris, ['https://claude.ai/api/mcp/auth_callback']);
     assert.equal(auth.dataDir, '/data');
     assert.ok(auth.cookieKeys.length >= 1 && auth.cookieKeys.every(k => k.length >= 32));
     const [jwk] = auth.jwks.keys;
@@ -46,6 +48,23 @@ describe('init', () => {
     }
     assert.notEqual(hub.secrets.crz, hub.secrets.orsr);
     assert.equal(auth.brand, undefined, 'no brand means the default pack');
+  });
+
+  it('says on stderr which web callbacks it allowed, so stdout stays the host names', async () => {
+    const t = await initialized('crz');
+    assert.deepEqual(t.out, ['auth.example.com', 'crz.example.com']);
+    const notice = t.err.join('\n');
+    assert.ok(notice.includes('https://claude.ai/api/mcp/auth_callback'), notice);
+    assert.match(notice, /callbacks remove/);
+  });
+
+  it('--no-claude-callbacks allows no web callback and says that Claude desktop and claude.ai will not connect', async () => {
+    const t = setup();
+    assert.equal(await t.cli('init', '--base', 'example.com', '--services', 'crz', '--acme-email', ACME_EMAIL, '--no-claude-callbacks',
+      '--record', t.record, '--record-sha256', t.recordSha), 0, t.err.join('\n'));
+    assert.deepEqual(JSON.parse(readEnvFile(join(t.root, '.env')).AUTH_CONFIG_JSON).redirectUris, []);
+    assert.deepEqual(t.out, ['auth.example.com', 'crz.example.com']);
+    assert.match(t.err.join('\n'), /no web callback.*callbacks add claude/s);
   });
 
   it('renders the Caddyfile with the auth host and one site per enabled service', async () => {

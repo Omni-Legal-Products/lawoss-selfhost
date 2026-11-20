@@ -14,7 +14,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import {
-  DNS_NAME, Failure, UsageError, VERSION, deployment, proxyProblemOf, options, parseEnv, paths, randomKey, readEnvFile, requireImage, sha256,
+  DNS_NAME, Failure, UsageError, VERSION, callbacksProblemOf, deployment, proxyProblemOf, options, parseEnv, paths, randomKey, readEnvFile, requireImage, sha256,
   validateRecord, verifyAttestations, writeCaddyfile, writePrivateFile,
 } from '../lib.mjs';
 import {
@@ -79,9 +79,12 @@ async function dryRun(ctx, dir, privateKey) {
   try {
     const content = unseal(JSON.parse(readFileSync(join(dir, 'host.enc.json'), 'utf8')), readFileSync(privateKey));
     // The same refusal as --apply, so that a dry run never passes a backup that --apply rejects.
-    const badProxy = proxyProblemOf(parseEnv(Buffer.from(content.files?.['.env'] ?? '', 'base64').toString('utf8')));
+    const backupVars = parseEnv(Buffer.from(content.files?.['.env'] ?? '', 'base64').toString('utf8'));
+    const badProxy = proxyProblemOf(backupVars);
     if (badProxy) ctx.err(`lawoss-selfhost: the backup's .env has an invalid ${badProxy}`);
-    ok = !badProxy && await checkAuthPart(ctx, dir, privateKey, image);
+    const badCallbacks = callbacksProblemOf(backupVars);
+    if (badCallbacks) ctx.err(`lawoss-selfhost: the backup's .env: ${badCallbacks}`);
+    ok = !badProxy && !badCallbacks && await checkAuthPart(ctx, dir, privateKey, image);
   } catch {
     ok = false;
   }
@@ -116,6 +119,9 @@ function backupRelease(files, pin) {
   if (!DNS_NAME.test(vars.LAWOSS_BASE ?? '')) throw new Failure('the backup\'s .env has no valid LAWOSS_BASE');
   const badProxy = proxyProblemOf(vars);
   if (badProxy) throw new Failure(`the backup's .env has an invalid ${badProxy}; refusing it`);
+  // The backup is not trusted: its web callbacks decide where auth may send authorization codes.
+  const badCallbacks = callbacksProblemOf(vars);
+  if (badCallbacks) throw new Failure(`the backup's .env: ${badCallbacks}; refusing it`);
   const version = vars.LAWOSS_RELEASE;
   if (!VERSION.test(version ?? '')) throw new Failure('the backup\'s .env has no valid LAWOSS_RELEASE');
   const recordFile = files.get(`host/releases/${version}.json`);

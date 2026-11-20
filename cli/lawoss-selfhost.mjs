@@ -21,9 +21,11 @@ import { setKey, unsetKey } from './commands/keys.mjs';
 import { restoreSnapshot } from './commands/restore-snapshot.mjs';
 import { rotate } from './commands/rotate.mjs';
 import { services } from './commands/services.mjs';
+import { callbacks } from './commands/callbacks.mjs';
 
 export const USAGE = `Usage: lawoss-selfhost COMMAND
-  init --base BASE --services LIST --acme-email EMAIL [--brand PACK] [--http-port N] [--https-port N] [--proxy-bind ADDR] --record PATH --record-sha256 HEX
+  init --base BASE --services LIST --acme-email EMAIL [--brand PACK] [--http-port N] [--https-port N] [--proxy-bind ADDR] [--no-claude-callbacks] --record PATH --record-sha256 HEX
+        (--no-claude-callbacks: do not allow the web callback of Claude desktop and claude.ai)
         (--http-port, --https-port: host ports for Caddy's 80 and 443, default 80 and 443;
          --proxy-bind: one IPv4 or IPv6 address to bind them to, default all addresses)
   brand check PACK [--record PATH --record-sha256 HEX] | brand preview PACK [...] | brand set PACK
@@ -32,6 +34,8 @@ export const USAGE = `Usage: lawoss-selfhost COMMAND
   set-key NAME (value from stdin) | unset-key NAME
   rotate introspection|cookies|signing
   services add ID | services remove ID
+  callbacks [list] | callbacks add URL|claude | callbacks remove URL
+        (exact https callbacks auth accepts besides loopback; init allows Claude's)
   doctor
   backup init-key | backup | restore --dry-run [--private-key PATH] [BACKUP_DIR] | restore --apply --record-sha256 HEX [--private-key PATH] BACKUP_DIR
   update --to VERSION --record PATH --record-sha256 HEX | rollback
@@ -40,7 +44,7 @@ Environment: LAWOSS_ROOT (default /opt/lawoss).`;
 
 const COMMANDS = {
   init, brand, invite, grant, revoke, disable, list, 'set-key': setKey, 'unset-key': unsetKey, doctor, backup, restore, update, rollback,
-  'restore-snapshot': restoreSnapshot, rotate, services,
+  'restore-snapshot': restoreSnapshot, rotate, services, callbacks,
 };
 
 /** Runs one command with an injected context; returns the exit code. */

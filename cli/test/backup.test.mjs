@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { keptRecord, readEnvFile, verifyHostFiles } from '../lib.mjs';
+import { keptRecord, parseEnv, readEnvFile, setEnvVars, verifyHostFiles } from '../lib.mjs';
 import { seal, unseal } from '../commands/backup.mjs';
 import { RUNNING_ID, SECRETISH, SENTINEL, hostBytes, initialized, setup, sha256 } from './helpers.mjs';
 
@@ -198,6 +198,8 @@ describe('restore --apply', () => {
     };
     assert.equal(await t.cli('restore', '--apply', '--record-sha256', pin, '--private-key', key, dir), 0, t.err.join('\n'));
     assert.deepEqual(readFileSync(join(t.root, '.env')), readFileSync(join(source.root, '.env')));
+    assert.deepEqual(JSON.parse(readEnvFile(join(t.root, '.env')).AUTH_CONFIG_JSON).redirectUris,
+      ['https://claude.ai/api/mcp/auth_callback'], 'the web callbacks come back with the backup');
     assert.equal(statSync(join(t.root, '.env')).mode & 0o777, 0o600);
     assert.deepEqual(readFileSync(join(t.root, 'Caddyfile')), readFileSync(join(source.root, 'Caddyfile')));
     assert.deepEqual(hostBytes(t.root), hostBytes(source.root));
@@ -268,7 +270,7 @@ describe('restore --apply', () => {
     writeFileSync(join(dir, 'host.enc.json'), JSON.stringify(seal(content, readFileSync(join(t.root, 'keys', 'backup-public.pem')))));
     const fresh = setup();
     writeFileSync(join(fresh.root, '.env'), 'EXISTING=1\n', { mode: 0o600 });
-    return { fresh, dir, key, pin };
+    return { t, fresh, dir, key, pin };
   }
   const untouched = fresh => {
     assert.equal(fresh.calls.filter(argv => argv[1] === 'stop' || argv[1] === 'run' || argv[1] === 'volume').length, 0, 'nothing stopped or run');
@@ -289,6 +291,23 @@ describe('restore --apply', () => {
     assert.equal(await fresh.cli('restore', '--apply', '--record-sha256', pin, '--private-key', key, dir), 1);
     assert.match(fresh.err.join('\n'), /does not match the pinned value/);
     untouched(fresh);
+  });
+
+  it('refuses a backup whose web callbacks are not exact https URLs, in the dry run too, with the stack untouched', async () => {
+    const { t, fresh, dir, key, pin } = await resealed(content => {
+      const env = text(content, '.env');
+      const auth = JSON.parse(parseEnv(env).AUTH_CONFIG_JSON);
+      auth.redirectUris = ['https://*.example.org/callback'];
+      content.files['.env'] = b64(setEnvVars(env, { AUTH_CONFIG_JSON: JSON.stringify(auth) }));
+    });
+    assert.equal(await fresh.cli('restore', '--apply', '--record-sha256', pin, '--private-key', key, dir), 1);
+    assert.match(fresh.err.join('\n'), /redirectUris holds an invalid callback; refusing it/);
+    untouched(fresh);
+    t.calls.length = 0;
+    t.out.length = 0;
+    assert.equal(await t.cli('restore', '--dry-run', '--private-key', key, dir), 1);
+    assert.deepEqual(t.out, [`FAIL backup ${dir}`]);
+    assert.equal(t.calls.length, 0, 'the auth part is not even checked');
   });
 
   it('refuses a backup whose .env names other images than its pinned record, with the stack untouched', async () => {

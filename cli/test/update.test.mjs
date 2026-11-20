@@ -78,6 +78,7 @@ describe('update and rollback', () => {
     const vars = readEnvFile(join(t.root, '.env'));
     assert.equal(vars.LAWOSS_AUTH_IMAGE, `lawoss-auth@sha256:${digest('1')}`);
     assert.equal(vars.LAWOSS_RELEASE, '0.0.1');
+    assert.deepEqual(JSON.parse(vars.AUTH_CONFIG_JSON).redirectUris, ['https://claude.ai/api/mcp/auth_callback'], 'update keeps the web callbacks');
     assert.equal(statSync(join(t.root, '.env')).mode & 0o777, 0o600);
     assert.deepEqual(t.calls.map(kindOf), ['ps', 'stop', 'snapshot', 'snapshot', 'snapshot', 'up', 'introspection', 'manifest', 'tools']);
     for (const argv of t.calls.filter(isSnapshot)) {
@@ -170,8 +171,12 @@ describe('update and rollback', () => {
     const initial = readEnvFile(join(t.root, '.env'));
     const { path, sha } = nextRecord(t.root);
     assert.equal(await t.cli('update', '--to', '0.0.1', '--record', path, '--record-sha256', sha), 0);
+    // A callback added after the update stays through the rollback, like the other current settings.
+    assert.equal(await t.cli('callbacks', 'add', 'https://app.example.org/oauth/callback'), 0, t.err.join('\n'));
     assert.equal(await t.cli('rollback'), 0, t.err.join('\n'));
     const vars = readEnvFile(join(t.root, '.env'));
+    assert.deepEqual(JSON.parse(vars.AUTH_CONFIG_JSON).redirectUris,
+      ['https://claude.ai/api/mcp/auth_callback', 'https://app.example.org/oauth/callback']);
     assert.equal(vars.LAWOSS_RELEASE, '0.0.0');
     assert.equal(vars.LAWOSS_HUB_IMAGE, initial.LAWOSS_HUB_IMAGE);
     assert.equal(vars.HUB_CONFIG_JSON, initial.HUB_CONFIG_JSON);

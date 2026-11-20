@@ -154,7 +154,7 @@ again. It downloads nothing but the auth image.
 
 ```sh
 lawoss-selfhost init --base example.com --services crz,orsr --acme-email ops@example.com --record releases/VERSION.json --record-sha256 HEX
-                                           # optional: --http-port N --https-port N --proxy-bind ADDR
+                                           # optional: --http-port N --https-port N --proxy-bind ADDR --no-claude-callbacks
 lawoss-selfhost invite alice crz,orsr      # prints /opt/lawoss/handoff/alice.link
 lawoss-selfhost set-key FS_API_KEY         # the value is read from stdin, without echo
 lawoss-selfhost doctor
@@ -166,6 +166,7 @@ lawoss-selfhost restore-snapshot /opt/lawoss/snapshots/TIME
 lawoss-selfhost restore --apply --record-sha256 HEX --private-key /path/backup-private.pem /opt/lawoss/backups/TIME
 lawoss-selfhost rotate introspection       # or cookies, signing
 lawoss-selfhost services add judikaty      # or remove
+lawoss-selfhost callbacks add claude       # or add|remove URL, or list
 ```
 
 A release record (`releases/<version>.json`) names the commit, the image digests and the SHA-256 of
@@ -204,6 +205,21 @@ rendered from its template. All of it is checked before anything is stopped or w
 and `rotate signing` put a new key first and keep only the previous one (a signing key stays until
 the tokens it signed expire, 60 minutes). `services add|remove ID` changes both configurations,
 `LAWOSS_SERVICES` and the Caddyfile.
+
+`callbacks` manages the web callbacks that auth's dynamic client registration accepts besides
+loopback ones (`redirectUris` in `AUTH_CONFIG_JSON`). Each entry is one exact `https` URL, matched
+byte for byte, without user, query, fragment or wildcard; at most 20 entries of at most 2048
+characters. `init` allows the callback of Claude's hosted apps (claude.ai, Claude desktop and
+mobile), `https://claude.ai/api/mcp/auth_callback`, as Anthropic's connector documentation gives
+it, and names it on stderr (stdout stays the host names for DNS). `init --no-claude-callbacks`
+allows none. `callbacks add claude` adds it to a deployment created before it was the default;
+`callbacks add URL` adds another exact callback. A change recreates auth only. auth checks the list
+at every authorization: `callbacks remove URL` also stops connectors already registered with that
+callback, whose next sign-in fails until it is added again. `doctor` checks the list's format
+(`callbacks`), and `restore` refuses a backup whose list is not valid, before anything is stopped.
+Claude Code uses a loopback callback and needs no entry. Claude's hosted apps reach the deployment
+from the internet on the standard HTTPS port 443: with `--https-port` other than 443, a reverse
+proxy in front must take port 443 and forward it.
 
 Brand packs: `brand check PACK` and `brand preview PACK` validate or preview a pack directory (or
 a built-in pack name) without installing it; before `init` they take `--record` for the auth image.
