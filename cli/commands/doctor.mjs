@@ -9,7 +9,7 @@ import { promises as dns } from 'node:dns';
 import { readFileSync } from 'node:fs';
 import { request } from 'node:https';
 import { connect } from 'node:tls';
-import { compose, deployment, loadManifest, options, paths, sha256 } from '../lib.mjs';
+import { callbacksProblemOf, compose, deployment, loadManifest, options, paths, readEnvFile, sha256 } from '../lib.mjs';
 
 const TIMEOUT_MS = 10_000;
 const MAX_BODY = 64 * 1024;
@@ -127,6 +127,9 @@ export async function runDoctor(ctx) {
     const response = await probes.fetch(`${issuer}/.well-known/oauth-authorization-server`);
     return response.status === 200 && (await readJson(response))?.issuer === issuer;
   }), `issuer metadata auth.${base}`);
+  // The web callbacks auth accepts at registration: only exact https URLs, within the limits.
+  const callbacks = callbacksProblemOf(readEnvFile(paths(ctx.root).env));
+  report(callbacks === undefined, 'callbacks', callbacks);
   for (const id of services) {
     const host = `${id}.${base}`;
     const metadataUrl = `https://${host}/.well-known/oauth-protected-resource/mcp`;

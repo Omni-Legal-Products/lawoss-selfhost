@@ -234,11 +234,39 @@ export function deployment(root) {
 export const resourceUrl = (id, base) => `https://${id}.${base}/mcp`;
 
 /**
- * The exact web callback of Claude's hosted apps (claude.ai, Claude desktop and mobile), which
- * register with dynamic client registration as public clients; Anthropic's connector documentation
- * names this one URL. Loopback callbacks (Claude Code) need no entry.
+ * The exact web callback that Claude's hosted apps (claude.ai, Claude desktop and mobile) register
+ * with dynamic client registration as public clients, as Anthropic's connector documentation
+ * gives it. Loopback callbacks (Claude Code) need no entry.
  */
 export const CLAUDE_CALLBACKS = Object.freeze(['https://claude.ai/api/mcp/auth_callback']);
+
+/** At most this many web callbacks, each at most this long. */
+export const CALLBACK_LIMITS = Object.freeze({ count: 20, length: 2048 });
+
+/**
+ * Why `uri` is not a web callback auth may accept, or undefined: one exact https URL in the form the
+ * URL parser gives back, without user, query, fragment or wildcard. Never quotes the value.
+ */
+export function callbackProblem(uri) {
+  if (typeof uri !== 'string' || !uri.length || uri.length > CALLBACK_LIMITS.length)
+    return `a callback must be one https URL of at most ${CALLBACK_LIMITS.length} characters`;
+  let url;
+  try { url = new URL(uri); } catch { return 'a callback must be one https URL'; }
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.hostname.includes('*') || url.href !== uri)
+    return 'a callback must be one exact https URL in canonical form, without user, query, fragment or wildcard';
+  return undefined;
+}
+
+/** Why the redirectUris of an .env's AUTH_CONFIG_JSON are invalid, or undefined; absent means none. */
+export function callbacksProblemOf(vars) {
+  let auth;
+  try { auth = JSON.parse(vars.AUTH_CONFIG_JSON); } catch { return 'AUTH_CONFIG_JSON is not readable'; }
+  const list = auth?.redirectUris;
+  if (list === undefined) return undefined;
+  if (!Array.isArray(list) || list.length > CALLBACK_LIMITS.count) return `redirectUris must be a list of at most ${CALLBACK_LIMITS.count} callbacks`;
+  if (new Set(list).size !== list.length) return 'redirectUris lists a callback twice';
+  return list.some(uri => callbackProblem(uri) !== undefined) ? 'redirectUris holds an invalid callback' : undefined;
+}
 
 /** AUTH_CONFIG_JSON and HUB_CONFIG_JSON of an .env text, parsed; their values are never printed. */
 export function readConfigs(text) {

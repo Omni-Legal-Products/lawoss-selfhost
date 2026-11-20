@@ -10,14 +10,14 @@ const recreateAuth = t => [...composeBase(t.root), 'up', '-d', '--wait', '--wait
 const quiet = t => assert.doesNotMatch([...t.out, ...t.err].join('\n'), SECRETISH);
 
 describe('callbacks', () => {
-  it('Claude\'s callback is the one documented exact URL', () => {
+  it('Claude\'s callback is the documented exact URL', () => {
     assert.deepEqual(CLAUDE_CALLBACKS, ['https://claude.ai/api/mcp/auth_callback']);
   });
 
   it('lists the allowed web callbacks, Claude\'s after init', async () => {
     const t = await initialized('crz');
     assert.equal(await t.cli('callbacks'), 0, t.err.join('\n'));
-    assert.deepEqual(t.out.slice(-CLAUDE_CALLBACKS.length), CLAUDE_CALLBACKS);
+    assert.deepEqual(t.out.slice(-1), CLAUDE_CALLBACKS);
     assert.equal(t.calls.length, 0, 'listing runs no container');
     quiet(t);
   });
@@ -82,12 +82,24 @@ describe('callbacks', () => {
       'https://app.example.org', // no path: not what the URL parser gives back
       'javascript:alert(1)',
       'not a url',
+      `https://app.example.org/${'a'.repeat(2048)}`, // longer than 2048 characters
     ]) {
       assert.equal(await t.cli('callbacks', 'add', uri), 2, uri);
     }
     assert.equal(await t.cli('callbacks', 'drop', CLAUDE_CALLBACKS[0]), 2);
     assert.equal(await t.cli('callbacks', 'add'), 2);
     assert.equal(readEnvFile(join(t.root, '.env')).AUTH_CONFIG_JSON, before);
+    assert.equal(t.calls.length, 0);
+  });
+
+  it('allows at most 20 web callbacks', async () => {
+    const t = await initialized('crz');
+    for (let n = 1; n < 20; n++) assert.equal(await t.cli('callbacks', 'add', `https://app${n}.example.org/callback`), 0, t.err.join('\n'));
+    assert.equal(authConfig(t).redirectUris.length, 20);
+    t.calls.length = 0;
+    assert.equal(await t.cli('callbacks', 'add', 'https://app20.example.org/callback'), 1);
+    assert.match(t.err.join('\n'), /at most 20/);
+    assert.equal(authConfig(t).redirectUris.length, 20);
     assert.equal(t.calls.length, 0);
   });
 });

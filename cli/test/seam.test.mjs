@@ -20,8 +20,8 @@ after(() => rmSync(scratch, { recursive: true, force: true }));
 let counter = 0;
 
 /** Starts the real auth server for the deployment's AUTH_CONFIG_JSON, with its data in a temporary directory. */
-async function startAuth(config) {
-  const auth = createAuth({ ...config, dataDir: join(scratch, `auth-${counter++}`) });
+async function startAuth(config, dataDir = join(scratch, `auth-${counter++}`)) {
+  const auth = createAuth({ ...config, dataDir });
   const server = auth.app.listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
   return {
@@ -102,6 +102,33 @@ describe('configuration seam between the CLI, the hub and auth', () => {
       const authorize = await toAuth(auth.port, { path: `/auth?${query}` });
       assert.equal(authorize.status, 303, authorize.body);
       assert.match(authorize.headers.location ?? '', /\/interaction\//);
+    } finally {
+      await auth.close();
+    }
+  });
+
+  it('after callbacks remove, a client registered with that callback cannot start a sign-in any more', async () => {
+    const t = await initialized('crz');
+    const dataDir = join(scratch, `auth-${counter++}`);
+    const callback = 'https://claude.ai/api/mcp/auth_callback';
+    const authorizePath = clientId => `/auth?${new URLSearchParams({
+      client_id: clientId, redirect_uri: callback, response_type: 'code', scope: 'mcp:tools', state: 'seam',
+      code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM', code_challenge_method: 'S256', resource: 'https://crz.example.com/mcp',
+    })}`;
+    let clientId;
+    let auth = await startAuth(JSON.parse(readEnvFile(join(t.root, '.env')).AUTH_CONFIG_JSON), dataDir);
+    try {
+      const registered = await toAuth(auth.port, { method: 'POST', path: '/reg', type: 'application/json', body: claudeRegistration(callback) });
+      assert.equal(registered.status, 201, registered.body);
+      clientId = JSON.parse(registered.body).client_id;
+    } finally {
+      await auth.close();
+    }
+    assert.equal(await t.cli('callbacks', 'remove', callback), 0, t.err.join('\n'));
+    auth = await startAuth(JSON.parse(readEnvFile(join(t.root, '.env')).AUTH_CONFIG_JSON), dataDir);
+    try {
+      const authorize = await toAuth(auth.port, { path: authorizePath(clientId) });
+      assert.equal(authorize.status, 400, authorize.body);
     } finally {
       await auth.close();
     }

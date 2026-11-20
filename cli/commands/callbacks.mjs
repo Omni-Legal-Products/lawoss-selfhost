@@ -1,20 +1,15 @@
-// callbacks [list] | callbacks add URI|claude | callbacks remove URI: the web callbacks auth's
+// callbacks [list] | callbacks add URL|claude | callbacks remove URL: the web callbacks auth's
 // dynamic client registration accepts besides loopback ones (AUTH_CONFIG_JSON redirectUris).
-// Each entry is one exact https URL, matched byte for byte; there are no wildcards. `claude` names
-// the callbacks of Claude's hosted apps, which init allows. A change recreates auth only; clients
-// registered before keep their callbacks, a removed one just cannot register again.
+// Each entry is one exact https URL, matched byte for byte; there are no wildcards, at most
+// CALLBACK_LIMITS.count entries of CALLBACK_LIMITS.length characters. `claude` names the callback of
+// Claude's hosted apps, which init allows. A change recreates auth only. auth checks the list at
+// every authorization, so a removed callback also stops clients registered with it before: their
+// next sign-in fails until it is added again.
 import { readFileSync } from 'node:fs';
-import { CLAUDE_CALLBACKS, Failure, UsageError, options, paths, readConfigs, withConfigs, writePrivateFile } from '../lib.mjs';
+import {
+  CALLBACK_LIMITS, CLAUDE_CALLBACKS, Failure, UsageError, callbackProblem, options, paths, readConfigs, withConfigs, writePrivateFile,
+} from '../lib.mjs';
 import { recreate } from './rotate.mjs';
-
-/** One exact https callback in the form the URL parser gives back, or a usage error. */
-function exactCallback(uri) {
-  let url;
-  try { url = new URL(uri); } catch { throw new UsageError('a callback must be one https URL'); }
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.hostname.includes('*') || url.href !== uri)
-    throw new UsageError('a callback must be one exact https URL in canonical form, without user, query, fragment or wildcard');
-  return uri;
-}
 
 export async function callbacks(args, ctx) {
   const { positionals } = options(args, {}, { positionals: [0, 2] });
@@ -29,9 +24,11 @@ export async function callbacks(args, ctx) {
     for (const uri of current) ctx.out(uri);
     return 0;
   }
-  if (action !== 'add' && action !== 'remove') throw new UsageError('callbacks takes list, add URI|claude or remove URI');
+  if (action !== 'add' && action !== 'remove') throw new UsageError('callbacks takes list, add URL|claude or remove URL');
   if (target === undefined) throw new UsageError(`callbacks ${action} needs a callback URL${action === 'add' ? ' or claude' : ''}`);
-  const uris = action === 'add' && target === 'claude' ? [...CLAUDE_CALLBACKS] : [exactCallback(target)];
+  const uris = action === 'add' && target === 'claude' ? [...CLAUDE_CALLBACKS] : [target];
+  const problem = callbackProblem(uris[0]);
+  if (problem) throw new UsageError(problem);
 
   let next;
   let lines;
@@ -42,6 +39,8 @@ export async function callbacks(args, ctx) {
       return 0;
     }
     next = [...current, ...missing];
+    if (next.length > CALLBACK_LIMITS.count)
+      throw new Failure(`auth allows at most ${CALLBACK_LIMITS.count} web callbacks; remove one first; nothing changed`);
     lines = missing.map(uri => `allowed ${uri}`);
   } else {
     if (!current.includes(uris[0])) throw new Failure(`${uris[0]} is not an allowed callback; nothing changed`);

@@ -243,9 +243,11 @@ služieb na diaľku dáva plugin `lawoss-remote-skills` z LAWOSS Marketplace.
 > tie webové callbacky, ktoré sú výslovne v jeho konfigurácii. `init` tam od tejto zmeny zapíše
 > callback aplikácií Claude `https://claude.ai/api/mcp/auth_callback` a vypíše ho. Kto ho nechce,
 > spustí `init` s voľbou `--no-claude-callbacks` alebo ho neskôr odoberie príkazom
-> `callbacks remove URL`. Vydania 0.2.0 a 0.2.1 ho nezapisovali, preto sa v nich vlastný konektor
-> v Claude desktop alebo na claude.ai nepripojil (`400 invalid_client_metadata`). Nasadenie z týchto
-> vydaní ho po aktualizácii na vydanie s touto zmenou dostane príkazom `callbacks add claude`.
+> `callbacks remove URL`; tým sa odpoja aj už pripojené konektory Claude pri ďalšom prihlásení.
+> Vydania 0.2.0 a 0.2.1 ho nezapisovali, preto sa v nich vlastný konektor v Claude desktop alebo
+> na claude.ai nepripojil (`400 invalid_client_metadata`). Nasadenie z týchto vydaní ho po
+> aktualizácii na vydanie s touto zmenou dostane príkazom `callbacks add claude`. Aplikácie Claude
+> sa k serveru pripájajú z internetu cez štandardný port HTTPS 443.
 
 ## Prevádzka
 

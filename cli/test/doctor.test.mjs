@@ -26,6 +26,7 @@ describe('doctor', () => {
       'PASS dns auth.example.com', 'PASS dns crz.example.com', 'PASS dns orsr.example.com',
       'PASS tls auth.example.com', 'PASS tls crz.example.com', 'PASS tls orsr.example.com',
       'PASS issuer metadata auth.example.com',
+      'PASS callbacks',
       'PASS resource metadata crz.example.com', 'PASS 401 challenge crz.example.com',
       'PASS resource metadata orsr.example.com', 'PASS 401 challenge orsr.example.com',
       'PASS introspection crz', 'PASS introspection orsr',
